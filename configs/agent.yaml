@@ -1,0 +1,55 @@
+# @package _global_
+
+agent:
+  _recursive_: False
+  config:
+    # data loader parameters
+    batch_size: 256 # it should be bigger than the len(motion)
+    window_size: 32 # 64 # 16
+    num_workers: 4
+
+    # optimization parameters
+    total_iter: 100000
+    warmup_iter: 1000
+    lr: 2e-4
+    lr_scheduler: [50000, 100000]
+    gamma: 0.05
+    weight_decay: 0.0
+    commit: 0.02
+    loss_vel: 0.5
+    recons_loss: 'l1_smooth'
+    
+    # model parameters # code dim 256 for spot loco
+    num_joints: 24  # Default for SMPL
+  
+    
+    code_dim: 512 # 256
+    nb_code: 512 # 256
+    mu: 0.99
+    down_t: 2
+    stride_t: 2
+    width: 512 # 256
+    depth: 3
+    dilation_growth_rate: 3
+    output_emb_width: 512 # 256
+    vq_act: 'relu'
+    vq_norm: null
+
+    # quantizer
+    quantizer: 'ema_reset'
+    beta: 1.0
+
+
+    
+    # Wandb parameters
+    use_wandb: true
+    wandb_project: "amass-vqvae-mvq"
+    wandb_run_name: ${wandb_run_name}
+    wandb_tags: [] 
+           
+    # Logging and saving
+    save_every: 1000
+    print_iter: 500
+    seed: 123
+
+

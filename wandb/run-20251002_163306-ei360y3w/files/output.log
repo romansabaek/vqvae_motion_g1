@@ -1,0 +1,18 @@
+INFO:motion_vqvae.data.motion_data_adapter:Loading motion data in MVQ format from: /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl
+[MotionLib] Loading motions:   0%|                                                                                                                                                      | 0/1 [00:00<?, ?it/s]ERROR:motion_vqvae.utils.motion_lib:Error loading motion file /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl: '>=' not supported between instances of 'list' and 'int'
+[MotionLib] Loading motions: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1/1 [00:01<00:00,  1.43s/it]
+ERROR:__main__:Failed to setup agent: torch.cat(): expected a non-empty list of Tensors
+Traceback (most recent call last):
+  File "/home/dhbaek/dh_workspace/MotionVQVAE/scripts/train_vqvae.py", line 150, in <module>
+    main()
+  File "/home/dhbaek/dh_workspace/MotionVQVAE/scripts/train_vqvae.py", line 109, in main
+    agent.setup_from_file(args.motion_file, motion_ids)
+  File "/home/dhbaek/dh_workspace/MotionVQVAE/motion_vqvae/agent.py", line 109, in setup_from_file
+    mocap_data, end_indices, frame_size = self.motion_adapter.load_motion_data(motion_file, motion_ids)
+  File "/home/dhbaek/dh_workspace/MotionVQVAE/motion_vqvae/data/motion_data_adapter.py", line 68, in load_motion_data
+    self.motion_lib = MotionLib(motion_file, self.device, motion_ids)
+  File "/home/dhbaek/dh_workspace/MotionVQVAE/motion_vqvae/utils/motion_lib.py", line 32, in __init__
+    self._load_motions(motion_file)
+  File "/home/dhbaek/dh_workspace/MotionVQVAE/motion_vqvae/utils/motion_lib.py", line 147, in _load_motions
+    self._motion_root_pos = torch.cat(self._motion_root_pos, dim=0)
+RuntimeError: torch.cat(): expected a non-empty list of Tensors
