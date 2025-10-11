@@ -79,7 +79,7 @@ echo ""
 echo "Starting motion evaluations..."
 
 # Generate motions (change the range as needed)
-run_evaluation 10 20 "motion_evaluation"
+run_evaluation 0 100 "motion_evaluation"
 
 echo ""
 echo "🎉 All evaluations completed!"

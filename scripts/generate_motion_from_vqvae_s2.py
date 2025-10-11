@@ -83,19 +83,18 @@ class AMASSFormatGenerator:
         print(f"Loaded trained model from: {self.checkpoint_path}")
         print(f"Model initialized with frame_size: {self.frame_size}")
     
-    def generate_amass_format_pkl(self, motion_ids: List[int], output_file: str = None, csv_file: str = None):
-        """SIMPLIFIED: Generate PKL files in AMASS format for specified motion IDs."""
-        print(f"\n=== Generating AMASS Format PKL File ===")
-        
-        # Create simple filename
-        if output_file is None:
-            output_file = f"./outputs/vqvae_motion_{motion_ids[0]}.pkl"
+    def generate_amass_format_pkl(self, motion_ids: List[int], output_dir: str = None, csv_file: str = None):
+        """Generate separate PKL files in AMASS format for each motion ID."""
+        print(f"\n=== Generating AMASS Format PKL Files ===")
         
         # Create output directory
-        output_path = Path(output_file).parent
+        if output_dir is None:
+            output_dir = "./outputs/vqvae_motions"
+        
+        output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         
-        generated_motions = {}
+        generated_files = []
         codebook_data = []  # Store codebook sequences for CSV
         
         for motion_id in motion_ids:
@@ -111,29 +110,36 @@ class AMASSFormatGenerator:
             if reconstructed_motion is not None:
                 # Use original motion key for consistency
                 original_key = self.original_keys[motion_id]
-                generated_motions[original_key] = reconstructed_motion
-                print(f"Generated motion: {original_key}")
+                
+                # Create single-motion dictionary (same format as generate_motion_per_block.py)
+                single_motion_dict = {original_key: reconstructed_motion}
+                
+                # Save individual PKL file for this motion
+                motion_file = output_path / f"vqvae_motion_{motion_id:03d}.pkl"
+                joblib.dump(single_motion_dict, motion_file)
+                
+                generated_files.append(str(motion_file))
+                print(f"✅ Generated motion: {original_key} -> {motion_file}")
                 
                 # Store codebook sequence data
                 codebook_data.append({
                     'motion_id': motion_id,
                     'motion_key': original_key,
+                    'file_path': str(motion_file),
                     'sequence_length': reconstructed_motion['dof'].shape[0],
                     'codebook_sequence': codebook_sequence,
                     'unique_blocks': len(np.unique(codebook_sequence)),
                     'total_blocks': len(codebook_sequence)
                 })
         
-        # Save in AMASS format
-        joblib.dump(generated_motions, output_file)
-        print(f"\nSaved AMASS format PKL file to: {output_file}")
-        print(f"Generated {len(generated_motions)} VQVAE motions in AMASS format")
+        print(f"\nSaved {len(generated_files)} individual AMASS format PKL files to: {output_path}")
+        print(f"Generated {len(generated_files)} VQVAE motions in AMASS format")
         
         # Save codebook sequences to CSV
         if csv_file and codebook_data:
             self._save_codebook_csv(codebook_data, csv_file)
         
-        return generated_motions, output_file
+        return generated_files, output_dir
     
     def _generate_single_motion_amass_format(self, motion_id: int):
         """SIMPLIFIED: Generate reconstructed motion in AMASS format."""
@@ -258,6 +264,7 @@ class AMASSFormatGenerator:
             csv_rows.append({
                 'motion_id': data['motion_id'],
                 'motion_key': data['motion_key'],
+                'file_path': data.get('file_path', ''),
                 'sequence_length': data['sequence_length'],
                 'total_blocks': data['total_blocks'],
                 'unique_blocks': data['unique_blocks'],
@@ -294,24 +301,34 @@ def main():
     parser.add_argument('--checkpoint', type=str, default='checkpoints/best_model.ckpt', help='Path to model checkpoint')
     parser.add_argument('--input_pkl', type=str, required=True, help='Path to input PKL motion data file')
     parser.add_argument('--motion_ids', type=str, default='0', help='Comma-separated motion IDs to generate')
-    parser.add_argument('--output_file', type=str, default=None, help='Output PKL file path')
+    parser.add_argument('--output_dir', type=str, default=None, help='Output directory for PKL files')
     parser.add_argument('--csv_file', type=str, default=None, help='CSV file path for codebook sequences')
     
     args = parser.parse_args()
     
-    # Parse motion IDs
-    motion_ids = [int(x.strip()) for x in args.motion_ids.split(',')]
+    # Parse motion IDs (support ranges like "0-20")
+    motion_ids = []
+    for x in args.motion_ids.split(','):
+        x = x.strip()
+        if '-' in x:
+            start, end = map(int, x.split('-'))
+            motion_ids.extend(range(start, end + 1))
+        else:
+            motion_ids.append(int(x))
     
     # Initialize generator
     generator = AMASSFormatGenerator(args.config, args.checkpoint, args.input_pkl)
     
     # Generate AMASS format motions
-    generated_motions, output_file = generator.generate_amass_format_pkl(motion_ids, args.output_file, args.csv_file)
+    generated_files, output_dir = generator.generate_amass_format_pkl(motion_ids, args.output_dir, args.csv_file)
     
     print(f"\n=== Generation Complete ===")
-    print(f"Generated {len(generated_motions)} VQVAE motions in AMASS format")
-    print(f"Output file: {output_file}")
+    print(f"Generated {len(generated_files)} VQVAE motions in AMASS format")
+    print(f"Output directory: {output_dir}")
     print(f"Motion IDs: {motion_ids}")
+    print(f"Files created:")
+    for file_path in generated_files:
+        print(f"  - {file_path}")
 
 
 if __name__ == "__main__":
@@ -320,20 +337,18 @@ if __name__ == "__main__":
 '''
 checkpoints/best_model.ckpt \
 
-python scripts/generate_motion_from_vqvae_s2.py \
-    --config configs/agent.yaml \
-    --checkpoint outputs/run_0_300/best_model.ckpt \
-    --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
-    --motion_ids "0-300" \
-    --output_file ./outputs/vqvae_motion_0-300.pkl \
-    --csv_file ./outputs/vqvae_motion_0-300_codebook.csv
-
-
 
 python scripts/generate_motion_from_vqvae_s2.py \
     --config configs/agent.yaml \
     --checkpoint outputs/run_0_300/best_model.ckpt \
     --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
     --motion_ids "1"
+
+
+python scripts/generate_motion_from_vqvae_s2.py \
+    --config configs/agent.yaml \
+    --checkpoint outputs/run_0_300/best_model.ckpt \
+    --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
+    --motion_ids "0-20"
 
 '''
