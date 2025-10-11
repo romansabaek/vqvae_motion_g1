@@ -1,0 +1,26 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Training logs and data files
+wandb/
+outputs/
+checkpoints/
+*.ckpt
+*.log
+
+# Large data files
+*.npy
+*.npz
+*.h5
+*.pkl
+*.pickle
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db

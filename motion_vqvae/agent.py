@@ -47,29 +47,46 @@ class StatsLogger:
 
     def log_stats(self, data, print_iter):
         ep = data["epoch"]
-        ep_recon_loss = data["ep_recon_loss"]
-        ep_vel_loss = data["ep_vel_loss"]
-        ep_commit_loss = data["ep_commit_loss"]
-        ep_perplexity = data["ep_perplexity"]
-
-        if ep % print_iter == 0:
-            log.info(
-                "{} | Recon: {:.3e} | Vel: {:.3e} | Commit: {:.3e} | PPL: {:.2f}".format(
-                    self.time_since(ep), ep_recon_loss, ep_vel_loss, ep_commit_loss, ep_perplexity
-                )
-            )
         
-        # Log to wandb if enabled
-        if self.use_wandb and wandb.run is not None:
-            metrics = {
-                "epoch": ep,
-                "train/reconstruction_loss": ep_recon_loss,
-                "train/velocity_loss": ep_vel_loss,
-                "train/commitment_loss": ep_commit_loss,
-                "train/perplexity": ep_perplexity,
-                "train/total_loss": ep_recon_loss + ep_vel_loss + ep_commit_loss,
-            }
-            wandb.log(metrics, step=ep)
+        # Handle both training and validation data formats
+        if "ep_recon_loss" in data:
+            # Training data format
+            ep_recon_loss = data["ep_recon_loss"]
+            ep_vel_loss = data["ep_vel_loss"]
+            ep_commit_loss = data["ep_commit_loss"]
+            ep_perplexity = data["ep_perplexity"]
+            
+            if ep % print_iter == 0:
+                log.info(
+                    "{} | Recon: {:.3e} | Vel: {:.3e} | Commit: {:.3e} | PPL: {:.2f}".format(
+                        self.time_since(ep), ep_recon_loss, ep_vel_loss, ep_commit_loss, ep_perplexity
+                    )
+                )
+            
+            # Log to wandb if enabled
+            if self.use_wandb and wandb.run is not None:
+                metrics = {
+                    "epoch": ep,
+                    "train/reconstruction_loss": ep_recon_loss,
+                    "train/velocity_loss": ep_vel_loss,
+                    "train/commitment_loss": ep_commit_loss,
+                    "train/perplexity": ep_perplexity,
+                    "train/total_loss": ep_recon_loss + ep_vel_loss + ep_commit_loss,
+                }
+                wandb.log(metrics, step=ep)
+        
+        elif "val_loss" in data:
+            # Validation data format - just log to wandb, don't print
+            if self.use_wandb and wandb.run is not None:
+                metrics = {
+                    "epoch": ep,
+                    "val/loss": data["val_loss"],
+                    "val/reconstruction_loss": data["val_recon_loss"],
+                    "val/velocity_loss": data["val_vel_loss"],
+                    "val/commitment_loss": data["val_commit_loss"],
+                    "val/perplexity": data["val_perplexity"],
+                }
+                wandb.log(metrics, step=ep)
 
 
 class MVQVAEAgent:
@@ -78,6 +95,12 @@ class MVQVAEAgent:
     def __init__(self, config=None, device=None):
         self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.config = config
+        
+        # Load config attributes for compatibility with loss functions
+        if config is not None:
+            self.recons_loss = config.get('recons_loss', 'l1_smooth')
+        else:
+            self.recons_loss = 'l1_smooth'
         
         self._should_stop = False
         self.current_epoch = 0
@@ -92,15 +115,7 @@ class MVQVAEAgent:
     def setup_from_file(self, motion_file: str, motion_ids: Optional[list] = None):
         """Setup model and optimizers from motion file"""
         
-        # Initialize wandb if enabled
-        if self.config['use_wandb']:
-            if wandb.run is None:
-                wandb.init(
-                    project=self.config['wandb_project'],
-                    name=self.config['wandb_run_name'],
-                    config=self.config,
-                    tags=self.config['wandb_tags'],
-                )
+        # Don't initialize wandb here - we'll do it after warmup to avoid step conflicts
 
         # Create motion data adapter
         self.motion_adapter = MotionDataAdapter(self.config)
@@ -172,15 +187,7 @@ class MVQVAEAgent:
     def setup(self, mocap_data, end_indices):
         """Setup model and optimizers with provided data (legacy method)"""
         
-        # Initialize wandb if enabled
-        if self.config['use_wandb']:
-            if wandb.run is None:
-                wandb.init(
-                    project=self.config['wandb_project'],
-                    name=self.config['wandb_run_name'],
-                    config=self.config,
-                    tags=self.config['wandb_tags'],
-                )
+        # Don't initialize wandb here - we'll do it after warmup to avoid step conflicts
 
         # Get motion data properties
         self.frame_size = mocap_data.shape[1]  # number of dims
@@ -354,17 +361,27 @@ class MVQVAEAgent:
             loss.backward()
             self.optimizer.step()
 
-            logger.log_stats({
-                "epoch": nb_iter,
-                "ep_recon_loss": loss_mot.item(),
-                "ep_vel_loss": loss_vel.item(),
-                "ep_commit_loss": loss_commit.item(),
-                "ep_perplexity": perplexity.item(),
-            }, self.config['print_iter'])
+            # For warmup, don't log to wandb to avoid step conflicts
+            if nb_iter % self.config['print_iter'] == 0:
+                log.info(
+                    "Warmup {} | Recon: {:.3e} | Vel: {:.3e} | Commit: {:.3e} | PPL: {:.2f} | LR: {:.5f}".format(
+                        logger.time_since(nb_iter), loss_mot.item(), loss_vel.item(), loss_commit.item(), perplexity.item(), current_lr
+                    )
+                )
 
             log.info(f"Warmup. Iter {nb_iter} :  lr {current_lr:.5f} \t Commit. {loss_commit.item():.5f} \t PPL. {perplexity.item():.2f} \t Recons.  {loss_mot.item():.5f}")
 
         log.info("****Warmup completed****")
+
+        # Initialize wandb after warmup to avoid step conflicts
+        if self.config['use_wandb']:
+            if wandb.run is None:
+                wandb.init(
+                    project=self.config['wandb_project'],
+                    name=self.config['wandb_run_name'],
+                    config=self.config,
+                    tags=self.config['wandb_tags'],
+                )
 
         ##### Training #####    
         for nb_iter in range(1, self.config['total_iter'] + 1):
