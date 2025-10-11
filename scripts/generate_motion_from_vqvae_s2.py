@@ -320,7 +320,7 @@ if __name__ == "__main__":
 '''
 checkpoints/best_model.ckpt \
 
-python scripts/generate_motion_from_vqvae.py \
+python scripts/generate_motion_from_vqvae_s2.py \
     --config configs/agent.yaml \
     --checkpoint outputs/run_0_300/best_model.ckpt \
     --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
@@ -330,6 +330,10 @@ python scripts/generate_motion_from_vqvae.py \
 
 
 
-    python scripts/generate_motion_from_vqvae.py     --config configs/agent.yaml     --checkpoint checkpoints/best_model.ckpt     --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl     --motion_ids "1"
+python scripts/generate_motion_from_vqvae_s2.py \
+    --config configs/agent.yaml \
+    --checkpoint outputs/run_0_300/best_model.ckpt \
+    --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
+    --motion_ids "1"
 
 '''
