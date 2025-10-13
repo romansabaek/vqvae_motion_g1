@@ -48,6 +48,19 @@ class MotionBlockGenerator:
         self.mocap_data, self.end_indices, self.frame_size = self.motion_adapter.load_motion_data(input_pkl_file, [0])
         print(f"Loaded motion data: {self.mocap_data.shape}, frame_size: {self.frame_size}")
         
+        # Setup agent with motion data and normalization statistics
+        self.agent.mocap_data = self.mocap_data
+        self.agent.end_indices = self.end_indices
+        self.agent.frame_size = self.frame_size
+        
+        # Calculate normalization statistics (dataset-wide)
+        mean = self.mocap_data.mean(dim=0)
+        std = self.mocap_data.std(dim=0)
+        std[std == 0] = 1.0
+        
+        self.agent.mean = mean
+        self.agent.std = std
+        
         # Initialize model
         self._initialize_model()
         
@@ -146,47 +159,24 @@ class MotionBlockGenerator:
         return generated_blocks
     
     def _generate_single_block_motion(self, block_id: int):
-        """Generate motion for a single block using SIMPLIFIED approach - just use raw VQVAE output."""
+        """Generate motion for a single block - NO REPETITION, just one instance of the block."""
         try:
-            # SIMPLIFIED: Use a single template motion for consistency (motion 0)
-            template_motion_id = 0
+            # Ensure agent has proper normalization statistics (dataset-wide)
+            print(f"  Block {block_id}: Using dataset-wide normalization statistics")
             
-            # Load motion data in MVQ format for the template motion
-            mocap_data, end_indices, frame_size = self.motion_adapter.load_motion_data(
-                self.input_pkl_file, [template_motion_id]
-            )
-            
-            # Setup agent with motion data
-            self.agent.mocap_data = mocap_data
-            self.agent.end_indices = end_indices
-            self.agent.frame_size = frame_size
-            
-            # Calculate normalization statistics
-            mean = mocap_data.mean(dim=0)
-            std = mocap_data.std(dim=0)
-            std[std == 0] = 1.0
-            
-            self.agent.mean = mean
-            self.agent.std = std
-            
-            print(f"  Block {block_id}: Using template motion {template_motion_id}")
-            
-            # SIMPLIFIED: Just get a sequence length from the model
+            # SINGLE BLOCK: Create sequence with just ONE instance of the target block
             with torch.no_grad():
-                # Get a reference sequence to determine length
-                _, _, original_codebook_sequence = self.agent.evaluate_policy_rec(torch.tensor(0))
-                sequence_length = len(original_codebook_sequence)
+                # Create sequence with only ONE block (no repetition)
+                single_block_sequence = torch.tensor([block_id], dtype=torch.long, device=self.agent.device)
+                print(f"  Block {block_id}: Single block sequence: [{block_id}]")
                 
-                # Create sequence with only the target block
-                modified_sequence = torch.full((sequence_length,), block_id, dtype=torch.long, device=self.agent.device)
-                print(f"  Block {block_id}: Sequence length: {sequence_length}")
-                
-                # Generate motion directly from codebook sequence
-                reconstructed_motion = self.agent.evalulate_from_codebook_seq(modified_sequence)
+                # Generate motion directly from single codebook sequence
+                reconstructed_motion = self.agent.evalulate_from_codebook_seq(single_block_sequence)
                 print(f"  Block {block_id}: Generated motion shape: {reconstructed_motion.shape}")
                 
-                # SIMPLIFIED: Convert directly to AMASS format with minimal processing
-                amass_motion = self._convert_to_amass_format(reconstructed_motion, block_id, template_motion_id)
+                # Convert directly to AMASS format with minimal processing
+                # Use motion 0 as reference for AMASS format structure
+                amass_motion = self._convert_to_amass_format(reconstructed_motion, block_id, template_motion_id=0)
                 
                 return amass_motion
                 

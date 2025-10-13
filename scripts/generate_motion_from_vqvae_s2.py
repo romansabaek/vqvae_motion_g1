@@ -107,6 +107,21 @@ class AMASSFormatGenerator:
             # Generate reconstructed motion in AMASS format
             reconstructed_motion, codebook_sequence = self._generate_single_motion_amass_format(motion_id)
             
+            # Display codebook sequence
+            if codebook_sequence is not None:
+                print(f"  Codebook Sequence Length: {len(codebook_sequence)} blocks")
+                print(f"  Unique Blocks: {len(np.unique(codebook_sequence))}")
+                print(f"  Codebook Sequence: {','.join(map(str, codebook_sequence))}")
+                
+                # Show in readable format
+                chunk_size = 20
+                print(f"  Codebook Sequence (readable):")
+                for i in range(0, len(codebook_sequence), chunk_size):
+                    chunk = codebook_sequence[i:i+chunk_size]
+                    chunk_str = ' '.join(f"{block:3d}" for block in chunk)
+                    print(f"    {i:3d}-{i+len(chunk)-1:3d}: {chunk_str}")
+                print()
+            
             if reconstructed_motion is not None:
                 # Use original motion key for consistency
                 original_key = self.original_keys[motion_id]
