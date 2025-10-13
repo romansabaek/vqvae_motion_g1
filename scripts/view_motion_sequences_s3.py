@@ -1,16 +1,120 @@
 #!/usr/bin/env python3
 """
-View motion block sequences for specific motion IDs.
-Shows the exact sequence of motion blocks that represent each motion.
+Simple script: Given motion ID from AMASS, analyze and output the codebook sequence.
 """
 
-import pandas as pd
 import argparse
 from pathlib import Path
+import sys
+
+# Add motion_vqvae to path
+sys.path.append(str(Path(__file__).parent.parent))
+
+from motion_vqvae.agent import MVQVAEAgent
+from motion_vqvae.config_loader import ConfigLoader
+from motion_vqvae.data.motion_data_adapter import MotionDataAdapter
+import joblib
+import torch
+
+
+def get_codebook_sequence(config_path: str, checkpoint_path: str, input_pkl_file: str, motion_id: int):
+    """
+    Get the codebook sequence for a specific AMASS motion ID.
+    """
+    print(f"🎯 Motion ID: {motion_id}")
+    print("=" * 30)
+    
+    # Load config and initialize components
+    config_loader = ConfigLoader()
+    config = config_loader.load_config(config_path)
+    
+    # Load original AMASS data
+    original_motions = joblib.load(input_pkl_file)
+    original_keys = list(original_motions.keys())
+    
+    if motion_id >= len(original_keys):
+        print(f"❌ Motion ID {motion_id} out of range (max: {len(original_keys)-1})")
+        return None
+    
+    # Get motion info
+    motion_key = original_keys[motion_id]
+    original_motion = original_motions[motion_key]
+    
+    print(f"Motion Key: {motion_key}")
+    print(f"Duration: {original_motion['dof'].shape[0] / 30.0:.2f}s ({original_motion['dof'].shape[0]} frames)")
+    
+    # Initialize agent and motion adapter
+    agent = MVQVAEAgent(config=config)
+    motion_adapter = MotionDataAdapter(config)
+    
+    # Load motion data for this specific motion
+    mocap_data, end_indices, frame_size = motion_adapter.load_motion_data(input_pkl_file, [motion_id])
+    
+    # Setup agent with motion data
+    agent.mocap_data = mocap_data
+    agent.end_indices = end_indices
+    agent.frame_size = frame_size
+    
+    # Calculate normalization statistics
+    mean = mocap_data.mean(dim=0)
+    std = mocap_data.std(dim=0)
+    std[std == 0] = 1.0
+    
+    agent.mean = mean
+    agent.std = std
+    
+    # Initialize model
+    from motion_vqvae.models.models import MotionVQVAE
+    
+    agent.config['frame_size'] = frame_size
+    agent.model = MotionVQVAE(
+        agent,
+        config['nb_code'],
+        config['code_dim'],
+        config['output_emb_width'],
+        config['down_t'],
+        config['stride_t'],
+        config['width'],
+        config['depth'],
+        config['dilation_growth_rate'],
+        config['vq_act'],
+        config['vq_norm']
+    ).to(agent.device)
+    
+    # Load trained model
+    checkpoint = torch.load(checkpoint_path, map_location=agent.device)
+    agent.model.load_state_dict(checkpoint['model'])
+    agent.model.eval()
+    
+    # Get codebook sequence
+    with torch.no_grad():
+        _, _, codebook_sequence = agent.evaluate_policy_rec(torch.tensor(0))
+    
+    # Convert to numpy
+    codebook_sequence_np = codebook_sequence.cpu().numpy() if isinstance(codebook_sequence, torch.Tensor) else codebook_sequence
+    
+    print(f"Codebook Sequence Length: {len(codebook_sequence_np)} blocks")
+    print(f"Unique Blocks: {len(set(codebook_sequence_np))}")
+    print()
+    
+    # Output the sequence
+    print("🔢 Codebook Sequence:")
+    print(",".join(map(str, codebook_sequence_np)))
+    print()
+    
+    # Also show in readable format
+    print("📋 Codebook Sequence (readable):")
+    chunk_size = 20
+    for i in range(0, len(codebook_sequence_np), chunk_size):
+        chunk = codebook_sequence_np[i:i+chunk_size]
+        chunk_str = ' '.join(f"{block:3d}" for block in chunk)
+        print(f"  {i:3d}-{i+len(chunk)-1:3d}: {chunk_str}")
+    
+    return codebook_sequence_np
 
 
 def view_motion_sequences(csv_file: str, motion_ids: list = None, max_sequences: int = 10):
-    """View motion block sequences for specified motion IDs."""
+    """View motion block sequences for specified motion IDs (legacy function)."""
     
     # Load the analysis results
     df = pd.read_csv(csv_file)
@@ -73,48 +177,50 @@ def view_motion_sequences(csv_file: str, motion_ids: list = None, max_sequences:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='View motion block sequences')
-    parser.add_argument('--csv_file', type=str, default='./outputs/analysis/individual_motion_analysis.csv', 
-                       help='Path to the analysis CSV file')
-    parser.add_argument('--motion_ids', type=str, default=None, 
-                       help='Comma-separated motion IDs to view (e.g., "0,1,2" or "0-5")')
-    parser.add_argument('--max_sequences', type=int, default=10, 
-                       help='Maximum number of sequences to show if no IDs specified')
-    parser.add_argument('--find_patterns', action='store_true', 
-                       help='Find common motion block patterns')
-    parser.add_argument('--pattern_length', type=int, default=3, 
-                       help='Minimum length for pattern finding')
-    parser.add_argument('--compare', action='store_true', 
-                       help='Compare sequences between specified motions')
+    parser = argparse.ArgumentParser(description='Get codebook sequence for AMASS motion ID')
+    parser.add_argument('--config', type=str, default='configs/agent.yaml', 
+                       help='Path to config file')
+    parser.add_argument('--checkpoint', type=str, default='checkpoints/best_model.ckpt', 
+                       help='Path to model checkpoint')
+    parser.add_argument('--input_pkl', type=str, required=True,
+                       help='Path to input PKL motion data file')
+    parser.add_argument('--motion_id', type=int, required=True,
+                       help='Motion ID to analyze')
     
     args = parser.parse_args()
     
-    # Parse motion IDs
-    motion_ids = None
-    if args.motion_ids:
-        motion_ids = []
-        for x in args.motion_ids.split(','):
-            x = x.strip()
-            if '-' in x:
-                start, end = map(int, x.split('-'))
-                motion_ids.extend(range(start, end + 1))
-            else:
-                motion_ids.append(int(x))
-    
-    # Check if CSV file exists
-    if not Path(args.csv_file).exists():
-        print(f"❌ CSV file not found: {args.csv_file}")
-        print("Run the motion block analysis first!")
+    # Check if files exist
+    if not Path(args.config).exists():
+        print(f"❌ Config file not found: {args.config}")
+        return
+        
+    if not Path(args.checkpoint).exists():
+        print(f"❌ Checkpoint file not found: {args.checkpoint}")
+        return
+        
+    if not Path(args.input_pkl).exists():
+        print(f"❌ Input PKL file not found: {args.input_pkl}")
         return
     
-    view_motion_sequences(args.csv_file, motion_ids, args.max_sequences)
+    # Get codebook sequence for the motion ID
+    get_codebook_sequence(args.config, args.checkpoint, args.input_pkl, args.motion_id)
 
 
 if __name__ == "__main__":
     main()
 
 '''
-python scripts/view_motion_sequences.py \
-    --csv_file ./outputs/analysis/individual_motion_analysis.csv \
-    --motion_ids "0-300"
+# Get codebook sequence for motion ID 1
+python scripts/view_motion_sequences_s3.py \
+    --config configs/agent.yaml \
+    --checkpoint outputs/run_0_300_g1/best_model.ckpt \
+    --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
+    --motion_id 1
+
+# Get codebook sequence for motion ID 10
+python scripts/view_motion_sequences_s3.py \
+    --config configs/agent.yaml \
+    --checkpoint outputs/run_0_300_g1/best_model.ckpt \
+    --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
+    --motion_id 10
 '''

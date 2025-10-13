@@ -1,6 +1,7 @@
 """
-SIMPLIFIED Motion data adapter for loading and converting motion data to MVQ format for VQ-VAE training.
-Focuses only on essential features: root deltas, joint positions, joint velocities.
+Motion data adapter for G1 humanoid AMASS data.
+Converts G1 humanoid motion data to MVQ format for VQ-VAE training.
+Optimized for G1 humanoid with 23 DOF and proper local frame features.
 """
 
 import torch
@@ -15,27 +16,26 @@ logger = logging.getLogger(__name__)
 
 class MotionDataAdapter:
     """
-    SIMPLIFIED adapter class to load motion data and convert to MVQ format for VQ-VAE training.
-    Only extracts essential features: root deltas, joint positions, joint velocities.
+    G1 Humanoid motion data adapter for VQ-VAE training.
+    Converts G1 humanoid AMASS data to MVQ format with proper local frame features.
+    Optimized for G1 humanoid with 23 DOF structure.
     """
     
-    # MVQ Format Parameters (matching reference implementation)
-    NUM_JOINTS = 24  # SMPL has 24 joints
-    ROOT_DELTAS_DIM = 4  # dx, dy, dz, dyaw
-    JOINT_POSITIONS_DIM = NUM_JOINTS * 3  # 72 (24 joints * 3 coordinates)
-    JOINT_VELOCITIES_DIM = NUM_JOINTS * 3  # 72 (24 joints * 3 velocities)
-    JOINT_ORIENTATIONS_DIM = NUM_JOINTS * 9  # 216 (24 joints * 9-D rotation matrices)
-    TOTAL_FRAME_SIZE = ROOT_DELTAS_DIM + JOINT_POSITIONS_DIM + JOINT_VELOCITIES_DIM + JOINT_ORIENTATIONS_DIM  # 364
+    # G1 Humanoid MVQ Format Parameters
+    NUM_DOF = 23  # G1 humanoid has 23 DOF
+    ROOT_DELTAS_DIM = 4  # dx, dy, dz, dyaw (local frame)
+    DOF_POSITIONS_DIM = NUM_DOF  # 23 DOF positions
+    DOF_VELOCITIES_DIM = NUM_DOF  # 23 DOF velocities
+    # Note: Removed joint orientations for G1 - using DOF-based representation
+    TOTAL_FRAME_SIZE = ROOT_DELTAS_DIM + DOF_POSITIONS_DIM + DOF_VELOCITIES_DIM  # 4 + 23 + 23 = 50
     
-    # Feature Indices
+    # Feature Indices (G1 Humanoid)
     ROOT_DELTAS_START = 0
-    ROOT_DELTAS_END = ROOT_DELTAS_DIM
-    JOINT_POSITIONS_START = ROOT_DELTAS_END
-    JOINT_POSITIONS_END = JOINT_POSITIONS_START + JOINT_POSITIONS_DIM
-    JOINT_VELOCITIES_START = JOINT_POSITIONS_END
-    JOINT_VELOCITIES_END = JOINT_VELOCITIES_START + JOINT_VELOCITIES_DIM
-    JOINT_ORIENTATIONS_START = JOINT_VELOCITIES_END
-    JOINT_ORIENTATIONS_END = TOTAL_FRAME_SIZE
+    ROOT_DELTAS_END = ROOT_DELTAS_DIM  # 0:4
+    DOF_POSITIONS_START = ROOT_DELTAS_END  # 4
+    DOF_POSITIONS_END = DOF_POSITIONS_START + DOF_POSITIONS_DIM  # 4:27
+    DOF_VELOCITIES_START = DOF_POSITIONS_END  # 27
+    DOF_VELOCITIES_END = DOF_VELOCITIES_START + DOF_VELOCITIES_DIM  # 27:50
     
     # Motion Parameters
     FPS = 30  # Frames per second
@@ -52,8 +52,8 @@ class MotionDataAdapter:
     
     def load_motion_data(self, motion_file: str, motion_ids: Optional[list] = None) -> Tuple[torch.Tensor, list, int]:
         """
-        SIMPLIFIED: Load motion data and convert to MVQ format.
-        Only extracts essential features: root deltas, joint positions, joint velocities.
+        Load G1 humanoid motion data and convert to MVQ format.
+        Extracts: root deltas (local frame), DOF positions, DOF velocities.
         """
         logger.info(f"Loading motion data from: {motion_file}")
         
@@ -78,7 +78,7 @@ class MotionDataAdapter:
             motion_data = motion_data_dict[motion_key]
             
             # Extract features for this motion
-            motion_features = self._extract_simple_features(motion_data)
+            motion_features = self._extract_g1_features(motion_data)
             all_features.append(motion_features)
             
             # Update end index
@@ -90,104 +90,136 @@ class MotionDataAdapter:
         self.end_indices = end_indices
         self.frame_size = self.mocap_data.shape[1]
         
-        logger.info(f"Loaded motion data: {self.mocap_data.shape[0]} frames, {self.frame_size} features")
+        logger.info(f"Loaded G1 humanoid motion data: {self.mocap_data.shape[0]} frames, {self.frame_size} features")
+        logger.info(f"Frame size breakdown: root_deltas({self.ROOT_DELTAS_DIM}) + dof_positions({self.DOF_POSITIONS_DIM}) + dof_velocities({self.DOF_VELOCITIES_DIM}) = {self.TOTAL_FRAME_SIZE}")
         logger.info(f"Number of motion sequences: {len(self.end_indices)}")
         
         return self.mocap_data, self.end_indices, self.frame_size
     
-    def _extract_simple_features(self, motion_data) -> torch.Tensor:
+    def _extract_g1_features(self, motion_data) -> torch.Tensor:
         """
-        SIMPLIFIED: Extract only essential features from motion data.
-        Features: root deltas, joint positions, joint velocities.
+        Extract G1 humanoid features from AMASS motion data using motion_lib-style smoothing.
+        Format: [root_deltas(4), dof_positions(23), dof_velocities(23)] = 50 dimensions
         """
-        # Extract basic motion data
+        # Extract G1 humanoid motion data
         root_pos = torch.tensor(motion_data["root_trans_offset"], dtype=torch.float32, device=self.device)
         root_rot = torch.tensor(motion_data["root_rot"], dtype=torch.float32, device=self.device)
         dof_pos = torch.tensor(motion_data["dof"], dtype=torch.float32, device=self.device)
         
         motion_length = root_pos.shape[0]
+        fps = motion_data.get("fps", self.FPS)
         
-        # Create MVQ frame tensor - matching reference format exactly
-        # Format: [root_deltas(4), joint_positions(72), joint_velocities(72), joint_orientations(216)] = 364 dimensions
+        # Validate DOF dimensions
+        if dof_pos.shape[1] != self.NUM_DOF:
+            raise ValueError(f"Expected {self.NUM_DOF} DOF, got {dof_pos.shape[1]}")
+        
+        # MOTION_LIB-STYLE SMOOTHING: Compute velocities first, then smooth them
+        # 1. Compute root velocities (global frame)
+        root_vel = torch.zeros_like(root_pos)
+        root_vel[:-1, :] = fps * (root_pos[1:, :] - root_pos[:-1, :])
+        root_vel[-1, :] = root_vel[-2, :]
+        root_vel = self._smooth(root_vel, 19)  # Smooth like motion_lib
+        
+        # 2. Compute root angular velocities using quaternion differences
+        root_ang_vel = torch.zeros_like(root_pos)
+        root_drot = self._quat_diff(root_rot[:-1], root_rot[1:])
+        root_ang_vel[:-1, :] = fps * self._quat_to_exp_map(root_drot)
+        root_ang_vel[-1, :] = root_ang_vel[-2, :]
+        root_ang_vel = self._smooth(root_ang_vel, 19)  # Smooth like motion_lib
+        
+        # 3. Compute DOF velocities
+        dof_vel = torch.zeros_like(dof_pos)
+        dof_vel[:-1, :] = fps * (dof_pos[1:, :] - dof_pos[:-1, :])
+        dof_vel[-1, :] = dof_vel[-2, :]
+        dof_vel = self._smooth(dof_vel, 19)  # Smooth like motion_lib
+        
+        # 4. Convert global velocities to LOCAL frame (like deploy_mujoco_falcon_motionlib.py)
+        lin_vel_local = self._quat_rotate_inverse(root_rot, root_vel)
+        ang_vel_local = self._quat_rotate_inverse(root_rot, root_ang_vel)
+        
+        # Create MVQ frame tensor for G1 humanoid
+        # Format: [root_deltas(4), dof_positions(23), dof_velocities(23)] = 50 dimensions
         mvq_frames = torch.zeros(motion_length, self.TOTAL_FRAME_SIZE, dtype=torch.float32, device=self.device)
         
-        # Process consecutive frames for LOCAL features (matching reference exactly)
+        # Process frames for LOCAL features
         for i in range(motion_length):
-            if i == 0:
-                # First frame - use zeros for deltas and velocities
-                mvq_frames[i, self.ROOT_DELTAS_START:self.ROOT_DELTAS_END] = 0  # Root deltas
-                
-                # Use DOF data for joint positions (pad to 72 dimensions)
-                dof_data = dof_pos[i]  # Shape: [23]
-                joint_pos = torch.zeros(self.JOINT_POSITIONS_DIM, device=self.device)
-                for j in range(0, self.JOINT_POSITIONS_DIM, dof_data.shape[0]):
-                    end_idx = min(j + dof_data.shape[0], self.JOINT_POSITIONS_DIM)
-                    joint_pos[j:end_idx] = dof_data[:end_idx-j]
-                mvq_frames[i, self.JOINT_POSITIONS_START:self.JOINT_POSITIONS_END] = joint_pos
-                
-                mvq_frames[i, self.JOINT_VELOCITIES_START:self.JOINT_VELOCITIES_END] = 0  # Joint velocities
-                mvq_frames[i, self.JOINT_ORIENTATIONS_START:self.JOINT_ORIENTATIONS_END] = 0  # Joint orientations
-            else:
-                # Convert to LOCAL frame features (matching reference motion_lib_mvq.py)
-                
-                # 1. LOCAL root deltas (relative to robot's heading frame)
-                global_delta = root_pos[i] - root_pos[i-1]
-                local_delta = self._global_to_local_heading(global_delta, root_rot[i-1])
-                yaw_delta = self._compute_yaw_delta(root_rot[i-1], root_rot[i])
-                
-                mvq_frames[i, self.ROOT_DELTAS_START:self.ROOT_DELTAS_START+3] = local_delta  # LOCAL position deltas (dx, dy, dz)
-                mvq_frames[i, self.ROOT_DELTAS_START+3] = yaw_delta  # Yaw delta
-                
-                # 2. Joint positions (use DOF directly - pad to required size)
-                # DOF has 23 elements, but we need 72 for joint positions
-                dof_data = dof_pos[i]  # Shape: [23]
-                # Pad DOF data to 72 dimensions (repeat pattern)
-                joint_pos = torch.zeros(self.JOINT_POSITIONS_DIM, device=self.device)
-                # Repeat DOF data to fill 72 dimensions (23 * 3 = 69, pad remaining 3)
-                for j in range(0, self.JOINT_POSITIONS_DIM, dof_data.shape[0]):
-                    end_idx = min(j + dof_data.shape[0], self.JOINT_POSITIONS_DIM)
-                    joint_pos[j:end_idx] = dof_data[:end_idx-j]
-                mvq_frames[i, self.JOINT_POSITIONS_START:self.JOINT_POSITIONS_END] = joint_pos
-                
-                # 3. Joint velocities (compute from DOF differences)
-                dof_data_prev = dof_pos[i-1]  # Shape: [23]
-                joint_pos_prev = torch.zeros(self.JOINT_POSITIONS_DIM, device=self.device)
-                # Repeat previous DOF data to fill 72 dimensions
-                for j in range(0, self.JOINT_POSITIONS_DIM, dof_data_prev.shape[0]):
-                    end_idx = min(j + dof_data_prev.shape[0], self.JOINT_POSITIONS_DIM)
-                    joint_pos_prev[j:end_idx] = dof_data_prev[:end_idx-j]
-                joint_vel = (joint_pos - joint_pos_prev) / self.DT
-                mvq_frames[i, self.JOINT_VELOCITIES_START:self.JOINT_VELOCITIES_END] = joint_vel
-                
-                # 4. Joint orientations (9-D rotation matrices) - simplified for now
-                mvq_frames[i, self.JOINT_ORIENTATIONS_START:self.JOINT_ORIENTATIONS_END] = 0  # TODO: Implement proper joint orientations
+            # 1. LOCAL root deltas (dx, dy, dz, dyaw in local frame)
+            # Use smoothed local velocities as deltas (divide by fps to get per-frame deltas)
+            mvq_frames[i, self.ROOT_DELTAS_START:self.ROOT_DELTAS_START+3] = lin_vel_local[i] / fps  # LOCAL position deltas (dx, dy, dz)
+            mvq_frames[i, self.ROOT_DELTAS_START+3] = ang_vel_local[i, 2] / fps  # Yaw delta (angular velocity around z-axis)
+            
+            # 2. DOF positions (use directly - no padding needed for G1)
+            mvq_frames[i, self.DOF_POSITIONS_START:self.DOF_POSITIONS_END] = dof_pos[i]
+            
+            # 3. DOF velocities (use smoothed velocities)
+            mvq_frames[i, self.DOF_VELOCITIES_START:self.DOF_VELOCITIES_END] = dof_vel[i]
         
         return mvq_frames
     
-    def _compute_yaw_delta(self, rot_t, rot_tp1):
-        """Compute yaw delta matching reference implementation."""
-        # Extract yaw from quaternions (WXYZ format)
-        yaw_t = torch.atan2(rot_t[3], rot_t[0]) * 2  # z, w components
-        yaw_tp1 = torch.atan2(rot_tp1[3], rot_tp1[0]) * 2
-        
-        yaw_delta = yaw_tp1 - yaw_t
-        
-        # Normalize to [-π, π] (matching reference)
-        yaw_delta = torch.atan2(torch.sin(yaw_delta), torch.cos(yaw_delta))
-        
-        return yaw_delta
+    def _smooth(self, x, box_pts):
+        """Smooth data using moving average (from motion_lib.py)."""
+        box = torch.ones(box_pts, device=self.device) / box_pts
+        num_channels = x.shape[1]
+        x_reshaped = x.T.unsqueeze(0)
+        smoothed = torch.nn.functional.conv1d(
+            x_reshaped,
+            box.view(1, 1, -1).expand(num_channels, 1, -1),
+            groups=num_channels,
+            padding='same'
+        )
+        return smoothed.squeeze(0).T
     
-    def _global_to_local_heading(self, global_delta, root_rot):
-        """Convert global delta to local heading frame (matching reference)."""
-        # Extract heading quaternion components (WXYZ format)
-        cos_yaw = root_rot[0]  # w component
-        sin_yaw = root_rot[3]  # z component
+    def _quat_diff(self, q1, q2):
+        """Compute quaternion difference q1^{-1} * q2 (from motion_lib.py)."""
+        # q1^{-1} * q2 where q^{-1} = [w, -x, -y, -z] for unit quaternions
+        q1_inv = q1.clone()
+        q1_inv[:, 1:] *= -1  # Negate x, y, z components
         
-        # Convert global delta to local heading frame
-        local_delta = torch.zeros_like(global_delta)
-        local_delta[0] = global_delta[0] * cos_yaw + global_delta[1] * sin_yaw   # Forward
-        local_delta[1] = -global_delta[0] * sin_yaw + global_delta[1] * cos_yaw  # Right  
-        local_delta[2] = global_delta[2]  # Up (unchanged)
+        # Quaternion multiplication
+        w1, x1, y1, z1 = q1_inv[:, 0], q1_inv[:, 1], q1_inv[:, 2], q1_inv[:, 3]
+        w2, x2, y2, z2 = q2[:, 0], q2[:, 1], q2[:, 2], q2[:, 3]
         
-        return local_delta
+        result = torch.zeros_like(q1)
+        result[:, 0] = w1*w2 - x1*x2 - y1*y2 - z1*z2  # w component
+        result[:, 1] = w1*x2 + x1*w2 + y1*z2 - z1*y2  # x component
+        result[:, 2] = w1*y2 - x1*z2 + y1*w2 + z1*x2  # y component
+        result[:, 3] = w1*z2 + x1*y2 - y1*x2 + z1*w2  # z component
+        
+        return result
+    
+    def _quat_to_exp_map(self, q):
+        """Convert quaternion to exponential map (rotation vector) (from motion_lib.py)."""
+        # Extract rotation vector components
+        x, y, z = q[:, 1], q[:, 2], q[:, 3]  # x, y, z components
+        
+        # Compute rotation angle
+        sin_angle = torch.sqrt(x*x + y*y + z*z)
+        angle = 2 * torch.atan2(sin_angle, q[:, 0])
+        
+        # Avoid division by zero
+        mask = sin_angle > 1e-6
+        result = torch.zeros(q.shape[0], 3, device=self.device)
+        
+        result[mask, 0] = x[mask] * angle[mask] / sin_angle[mask]
+        result[mask, 1] = y[mask] * angle[mask] / sin_angle[mask]
+        result[mask, 2] = z[mask] * angle[mask] / sin_angle[mask]
+        
+        return result
+    
+    def _quat_rotate_inverse(self, q, v):
+        """Rotate vector by inverse of quaternion (from deploy_mujoco_falcon_motionlib.py)."""
+        # q^{-1} * v * q where q^{-1} = [w, -x, -y, -z] for unit quaternions
+        q_inv = q.clone()
+        q_inv[:, 1:] *= -1  # Negate x, y, z components
+        
+        # Extract components
+        q_w = q_inv[:, 0]
+        q_vec = q_inv[:, 1:4]
+        
+        # Apply rotation: v' = v * (2w^2 - 1) + 2w * (q_vec × v) + 2 * q_vec * (q_vec · v)
+        a = v * (2.0 * q_w ** 2 - 1.0).unsqueeze(-1)
+        b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
+        c = q_vec * torch.bmm(q_vec.view(q.shape[0], 1, 3), v.view(q.shape[0], 3, 1)).squeeze(-1) * 2.0
+        
+        return a - b + c
     

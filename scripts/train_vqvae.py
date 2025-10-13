@@ -21,21 +21,6 @@ from motion_vqvae.config_loader import ConfigLoader
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-
-def parse_args():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='Train MotionVQVAE with config file')
-    parser.add_argument('--config', type=str, default='configs/agent.yaml', help='Path to YAML config file')
-    parser.add_argument('--motion_file', type=str, required=True, help='Path to motion file (PKL or NPY)')
-    parser.add_argument('--motion_ids', type=str, default=None, help='Motion IDs to load (comma-separated, e.g., "0,1,2" or "0-10" for range)')
-    parser.add_argument('--motion_id', type=int, default=None, help='Single motion ID to load (for backward compatibility)')
-    parser.add_argument('--device', type=str, default='auto', help='Device to use (cuda/cpu/auto)')
-    parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint to resume from')
-    parser.add_argument('--output_dir', type=str, default='./outputs', help='Output directory for checkpoints')
-    
-    return parser.parse_args()
-
-
 def setup_device(device_str: str) -> torch.device:
     """Setup device based on string input."""
     if device_str == 'auto':
@@ -68,8 +53,17 @@ def parse_motion_ids(motion_ids_str: str, motion_id: int) -> list:
 
 
 def main():
-    """Main training function."""
-    args = parse_args()
+
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description='Train MotionVQVAE with config file')
+    parser.add_argument('--config', type=str, default='configs/agent.yaml', help='Path to YAML config file')
+    parser.add_argument('--motion_file', type=str, required=True, help='Path to motion file (PKL or NPY)')
+    parser.add_argument('--motion_ids', type=str, default=None, help='Motion IDs to load (comma-separated, e.g., "0,1,2" or "0-10" for range)')
+    parser.add_argument('--motion_id', type=int, default=None, help='Single motion ID to load (for backward compatibility)')
+    parser.add_argument('--device', type=str, default='auto', help='Device to use (cuda/cpu/auto)')
+    parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint to resume from')
+    parser.add_argument('--output_dir', type=str, default='./outputs', help='Output directory for checkpoints')
+    args = parser.parse_args()
     
     # Parse motion IDs
     motion_ids = parse_motion_ids(args.motion_ids, args.motion_id)
@@ -90,10 +84,7 @@ def main():
     config_loader = ConfigLoader(args.config)
     config = config_loader.to_dict()
     
-    # Add device to config
     config['device'] = device
-    
-    # Add motion file specific config
     config['motion_file'] = args.motion_file
     config['motion_ids'] = motion_ids
     
@@ -157,6 +148,6 @@ python scripts/train_vqvae.py \
   --motion_file /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
   --motion_ids "0-300" \
   --device auto \
-  --output_dir ./outputs/run_0_300
+  --output_dir ./outputs/run_0_300_g1
 
 '''

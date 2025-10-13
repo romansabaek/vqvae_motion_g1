@@ -43,7 +43,7 @@ class AMASSFormatGenerator:
         self.checkpoint_path = checkpoint_path
         self.motion_adapter = MotionDataAdapter(self.config)
         
-        # Load motion data in MVQ format (364 dimensions)
+        # Load motion data in MVQ format (50 dimensions for G1)
         print(f"Loading motion data in MVQ format...")
         self.mocap_data, self.end_indices, self.frame_size = self.motion_adapter.load_motion_data(input_pkl_file, [0])
         print(f"Loaded motion data: {self.mocap_data.shape}, frame_size: {self.frame_size}")
@@ -182,67 +182,77 @@ class AMASSFormatGenerator:
     
     def _convert_to_exact_amass_format(self, reconstructed_motion: torch.Tensor, original_motion: torch.Tensor, motion_id: int):
         """
-        SIMPLIFIED: Convert VQVAE output directly to AMASS format.
-        The VQVAE decoder outputs local frame features - use them directly with minimal processing.
+        UPDATED: Convert VQVAE output to AMASS format for G1 humanoid with motion_lib-style features.
+        The VQVAE decoder outputs G1 format: [root_deltas(4), dof_positions(23), dof_velocities(23)] = 50 dimensions
+        Root deltas are now local frame velocities (dx, dy, dz, dyaw) that need to be integrated.
         """
         # Get original motion for reference format
         original_amass = self.original_motions[self.original_keys[motion_id]]
         
         mvq_np = reconstructed_motion.cpu().numpy()
         seq_len = mvq_np.shape[0]
+        fps = original_amass.get('fps', 30)
         
-        # Extract MVQ components
-        root_deltas = mvq_np[:, 0:4]  # [T, 4] - dx, dy, dz, dyaw
-        joint_positions = mvq_np[:, 4:76]  # [T, 72] - 24 joints * 3
+        # Extract MVQ components for G1 format
+        # Root deltas are now local frame velocities (per-frame deltas)
+        root_deltas = mvq_np[:, 0:4]  # [T, 4] - dx, dy, dz, dyaw in local frame (per-frame deltas)
+        dof_positions = mvq_np[:, 4:27]  # [T, 23] - DOF positions
+        dof_velocities = mvq_np[:, 27:50]  # [T, 23] - DOF velocities
         
-        # REVERT TO WORKING APPROACH: Use global features (like before local features change)
-        # This was working before with only minor roll/pitch issues
-        
-        # Simple integration of root deltas (global approach)
+        # Convert local frame root deltas to global positions
         root_trans_offset = np.zeros((seq_len, 3))
         root_trans_offset[0] = original_amass['root_trans_offset'][0]
         
-        for i in range(1, seq_len):
-            # Simple global delta integration
-            root_trans_offset[i] = root_trans_offset[i-1] + root_deltas[i, :3]
-        
-        # Simple root rotation reconstruction (stabilize roll/pitch)
+        # Initialize root rotation first
         root_rot = np.zeros((seq_len, 4))
         root_rot[0] = original_amass['root_rot'][0]
         
         for i in range(1, seq_len):
-            # Stabilize roll and pitch, only use yaw delta
-            prev_rot = root_rot[i-1]
-            yaw_delta = root_deltas[i, 3]
+            # Root deltas are already local frame per-frame deltas
+            local_delta = root_deltas[i, :3]  # dx, dy, dz in local frame
+            yaw_delta = root_deltas[i, 3]  # dyaw
             
-            # Extract current yaw
-            current_yaw = np.arctan2(prev_rot[3], prev_rot[0]) * 2
-            new_yaw = current_yaw + yaw_delta
+            # Get previous frame's yaw
+            prev_yaw = np.arctan2(root_rot[i-1, 3], root_rot[i-1, 0]) * 2
             
-            # Create new quaternion with stabilized roll/pitch (close to zero)
+            # Rotate local delta to global frame
+            cos_yaw = np.cos(prev_yaw)
+            sin_yaw = np.sin(prev_yaw)
+            global_delta = np.array([
+                cos_yaw * local_delta[0] - sin_yaw * local_delta[1],
+                sin_yaw * local_delta[0] + cos_yaw * local_delta[1],
+                local_delta[2]
+            ])
+            
+            root_trans_offset[i] = root_trans_offset[i-1] + global_delta
+            
+            # Reconstruct root rotation from yaw deltas
+            prev_yaw = np.arctan2(root_rot[i-1, 3], root_rot[i-1, 0]) * 2
+            new_yaw = prev_yaw + yaw_delta
+            
+            # Create new quaternion with stabilized roll/pitch
             root_rot[i] = np.array([np.cos(new_yaw/2), 0, 0, np.sin(new_yaw/2)])
         
-        # Use joint positions directly (like before)
-        smpl_joints = joint_positions.reshape(seq_len, 24, 3)
+        # Use DOF positions directly (G1 format)
+        dof = dof_positions.astype(np.float32)
         
-        # Use original DOF structure (this was working before)
-        dof = original_amass['dof'].copy()
-        
-        # Simple contact mask (foot height < threshold)
+        # Create simple contact mask based on root height
         contact_mask = np.zeros((seq_len, 2))
-        if smpl_joints.shape[1] >= 2:
-            contact_mask[:, 0] = smpl_joints[:, 0, 2] < 0.1  # Left foot
-            contact_mask[:, 1] = smpl_joints[:, 1, 2] < 0.1  # Right foot
+        # For G1, we'll use a simple heuristic based on root height
+        root_height = root_trans_offset[:, 2]
+        contact_threshold = np.percentile(root_height, 10)  # Bottom 10% as contact
+        contact_mask[:, 0] = root_height < contact_threshold  # Left foot
+        contact_mask[:, 1] = root_height < contact_threshold  # Right foot
         
-        # Create AMASS format structure
+        # Create AMASS format structure for G1
         amass_format_motion = {
             'root_trans_offset': root_trans_offset.astype(np.float32),
             'root_rot': root_rot.astype(np.float32),
             'pose_aa': original_amass['pose_aa'].copy().astype(np.float32),  # Keep original
-            'smpl_joints': smpl_joints.astype(np.float32),
+            'smpl_joints': original_amass['smpl_joints'].copy().astype(np.float32),  # Keep original for compatibility
             'contact_mask': contact_mask.astype(np.float32),
-            'dof': dof.astype(np.float32),
-            'fps': 30
+            'dof': dof,
+            'fps': fps
         }
         
         return amass_format_motion
@@ -340,7 +350,7 @@ checkpoints/best_model.ckpt \
 
 python scripts/generate_motion_from_vqvae_s2.py \
     --config configs/agent.yaml \
-    --checkpoint outputs/run_0_300/best_model.ckpt \
+    --checkpoint outputs/run_0_300_g1/best_model.ckpt \
     --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
     --motion_ids "1"
 

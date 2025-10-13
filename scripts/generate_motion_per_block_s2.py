@@ -43,7 +43,7 @@ class MotionBlockGenerator:
         self.checkpoint_path = checkpoint_path
         self.motion_adapter = MotionDataAdapter(self.config)
         
-        # Load motion data in MVQ format (364 dimensions)
+        # Load motion data in MVQ format (50 dimensions for G1)
         print(f"Loading motion data in MVQ format...")
         self.mocap_data, self.end_indices, self.frame_size = self.motion_adapter.load_motion_data(input_pkl_file, [0])
         print(f"Loaded motion data: {self.mocap_data.shape}, frame_size: {self.frame_size}")
@@ -105,7 +105,7 @@ class MotionBlockGenerator:
             print(f"\nProcessing motion block {block_id}...")
             
             try:
-                # Generate motion using the working method
+                # Generate motion using simplified VQVAE approach
                 motion_data = self._generate_single_block_motion(block_id)
                 
                 if motion_data is not None:
@@ -146,23 +146,22 @@ class MotionBlockGenerator:
         return generated_blocks
     
     def _generate_single_block_motion(self, block_id: int):
-        """Generate motion for a single block using the EXACT same pattern as generate_motion_from_vqvae_s2.py"""
+        """Generate motion for a single block using SIMPLIFIED approach - just use raw VQVAE output."""
         try:
-            # Use different template motion for each block to get variety
-            # This ensures we don't always use the same normalization and template
-            template_motion_id = block_id % len(self.original_keys)  # Cycle through available motions
+            # SIMPLIFIED: Use a single template motion for consistency (motion 0)
+            template_motion_id = 0
             
             # Load motion data in MVQ format for the template motion
             mocap_data, end_indices, frame_size = self.motion_adapter.load_motion_data(
-                self.input_pkl_file, [template_motion_id]  # Use different template for each block
+                self.input_pkl_file, [template_motion_id]
             )
             
-            # Setup agent with motion data - SAME AS REFERENCE
+            # Setup agent with motion data
             self.agent.mocap_data = mocap_data
             self.agent.end_indices = end_indices
             self.agent.frame_size = frame_size
             
-            # Calculate normalization statistics - SAME AS REFERENCE
+            # Calculate normalization statistics
             mean = mocap_data.mean(dim=0)
             std = mocap_data.std(dim=0)
             std[std == 0] = 1.0
@@ -172,49 +171,22 @@ class MotionBlockGenerator:
             
             print(f"  Block {block_id}: Using template motion {template_motion_id}")
             
-            # Use the EXACT same approach as generate_motion_from_vqvae_s2.py
+            # SIMPLIFIED: Just get a sequence length from the model
             with torch.no_grad():
-                # First get the original reconstruction to see the pipeline
-                reconstructed_motion, original_seq, original_codebook_sequence = self.agent.evaluate_policy_rec(torch.tensor(0))
-                print(f"  Block {block_id}: Original sequence length: {len(original_codebook_sequence)}")
+                # Get a reference sequence to determine length
+                _, _, original_codebook_sequence = self.agent.evaluate_policy_rec(torch.tensor(0))
+                sequence_length = len(original_codebook_sequence)
                 
-                # Now create our modified sequence with only the target block
-                sequence_length = len(original_codebook_sequence)  # Use the same length as original
+                # Create sequence with only the target block
                 modified_sequence = torch.full((sequence_length,), block_id, dtype=torch.long, device=self.agent.device)
-                print(f"  Block {block_id}: Modified sequence (first 10): {modified_sequence[:10].cpu().numpy()}")
+                print(f"  Block {block_id}: Sequence length: {sequence_length}")
                 
-                # Use the agent's evalulate_from_codebook_seq method (this is the key!)
-                # This method exists in the agent and handles the full pipeline correctly
+                # Generate motion directly from codebook sequence
                 reconstructed_motion = self.agent.evalulate_from_codebook_seq(modified_sequence)
+                print(f"  Block {block_id}: Generated motion shape: {reconstructed_motion.shape}")
                 
-                # DEBUG: Let's also check what happens if we use different block sequences
-                print(f"  Block {block_id}: Reconstructed motion shape: {reconstructed_motion.shape}")
-                
-                # Let's also try a mixed sequence to see if that produces different results
-                if block_id < 5:  # Only for first few blocks to avoid spam
-                    mixed_sequence = torch.tensor([block_id, block_id+1, block_id, block_id+1, block_id], 
-                                                dtype=torch.long, device=self.agent.device)
-                    # Pad to same length
-                    if len(mixed_sequence) < sequence_length:
-                        padding = torch.full((sequence_length - len(mixed_sequence),), block_id, 
-                                           dtype=torch.long, device=self.agent.device)
-                        mixed_sequence = torch.cat([mixed_sequence, padding])
-                    else:
-                        mixed_sequence = mixed_sequence[:sequence_length]
-                    
-                    mixed_motion = self.agent.evalulate_from_codebook_seq(mixed_sequence)
-                    print(f"  Block {block_id}: Mixed sequence motion shape: {mixed_motion.shape}")
-                    
-                    # Quick similarity check
-                    similarity = torch.cosine_similarity(
-                        reconstructed_motion.flatten(), 
-                        mixed_motion.flatten(), 
-                        dim=0
-                    ).item()
-                    print(f"  Block {block_id}: Similarity between repeated vs mixed: {similarity:.3f}")
-                
-                # Convert to exact AMASS format - SAME AS REFERENCE
-                amass_motion = self._convert_block_to_amass_format(reconstructed_motion, block_id, template_motion_id)
+                # SIMPLIFIED: Convert directly to AMASS format with minimal processing
+                amass_motion = self._convert_to_amass_format(reconstructed_motion, block_id, template_motion_id)
                 
                 return amass_motion
                 
@@ -223,67 +195,82 @@ class MotionBlockGenerator:
             return None
     
     
-    def _convert_block_to_amass_format(self, reconstructed_motion: torch.Tensor, block_id: int, template_motion_id: int):
+    def _convert_to_amass_format(self, reconstructed_motion: torch.Tensor, block_id: int, template_motion_id: int):
         """
-        Convert VQVAE output to AMASS format - following the same pattern as generate_motion_from_vqvae_s2.py
+        UPDATED: Convert VQVAE output to AMASS format for G1 humanoid with motion_lib-style features.
+        The VQVAE decoder outputs G1 format: [root_deltas(4), dof_positions(23), dof_velocities(23)] = 50 dimensions
+        Root deltas are now local frame velocities (dx, dy, dz, dyaw) that need to be integrated.
         """
-        # Use the template motion for the structure (same as the one used for generation)
+        # Get reference motion for basic structure
         reference_motion = self.original_motions[self.original_keys[template_motion_id]]
         
         mvq_np = reconstructed_motion.cpu().numpy()
         seq_len = mvq_np.shape[0]
+        fps = reference_motion.get('fps', 30)
         
-        # Extract MVQ components - same as reference code
-        root_deltas = mvq_np[:, 0:4]  # [T, 4] - dx, dy, dz, dyaw
-        joint_positions = mvq_np[:, 4:76]  # [T, 72] - 24 joints * 3
+        # Extract MVQ components for G1 format
+        # Root deltas are now local frame velocities (per-frame deltas)
+        root_deltas = mvq_np[:, 0:4]  # [T, 4] - dx, dy, dz, dyaw in local frame (per-frame deltas)
+        dof_positions = mvq_np[:, 4:27]  # [T, 23] - DOF positions
+        dof_velocities = mvq_np[:, 27:50]  # [T, 23] - DOF velocities
         
-        # Simple integration of root deltas (global approach) - same as reference
+        # Convert local frame deltas to global positions
         root_trans_offset = np.zeros((seq_len, 3))
         root_trans_offset[0] = reference_motion['root_trans_offset'][0]
         
-        for i in range(1, seq_len):
-            # Simple global delta integration
-            root_trans_offset[i] = root_trans_offset[i-1] + root_deltas[i, :3]
-        
-        # Simple root rotation reconstruction (stabilize roll/pitch) - same as reference
+        # Initialize root rotation first
         root_rot = np.zeros((seq_len, 4))
         root_rot[0] = reference_motion['root_rot'][0]
         
         for i in range(1, seq_len):
-            # Stabilize roll and pitch, only use yaw delta
-            prev_rot = root_rot[i-1]
-            yaw_delta = root_deltas[i, 3]
+            # Root deltas are already local frame per-frame deltas
+            local_delta = root_deltas[i, :3]  # dx, dy, dz in local frame
+            yaw_delta = root_deltas[i, 3]  # dyaw
             
-            # Extract current yaw
-            current_yaw = np.arctan2(prev_rot[3], prev_rot[0]) * 2
-            new_yaw = current_yaw + yaw_delta
+            # Get previous frame's yaw
+            prev_yaw = np.arctan2(root_rot[i-1, 3], root_rot[i-1, 0]) * 2
             
-            # Create new quaternion with stabilized roll/pitch (close to zero)
+            # Rotate local delta to global frame
+            cos_yaw = np.cos(prev_yaw)
+            sin_yaw = np.sin(prev_yaw)
+            global_delta = np.array([
+                cos_yaw * local_delta[0] - sin_yaw * local_delta[1],
+                sin_yaw * local_delta[0] + cos_yaw * local_delta[1],
+                local_delta[2]
+            ])
+            
+            root_trans_offset[i] = root_trans_offset[i-1] + global_delta
+            
+            # Reconstruct root rotation from yaw deltas
+            prev_yaw = np.arctan2(root_rot[i-1, 3], root_rot[i-1, 0]) * 2
+            new_yaw = prev_yaw + yaw_delta
+            
+            # Create new quaternion with stabilized roll/pitch
             root_rot[i] = np.array([np.cos(new_yaw/2), 0, 0, np.sin(new_yaw/2)])
         
-        # Use joint positions directly (like reference)
-        smpl_joints = joint_positions.reshape(seq_len, 24, 3)
+        # Use DOF positions directly (G1 format)
+        dof = dof_positions.astype(np.float32)
         
-        # Use reference DOF structure (this was working before)
-        dof = reference_motion['dof'][:seq_len].copy()
-        
-        # Simple contact mask (foot height < threshold) - same as reference
+        # Create simple contact mask based on root height
         contact_mask = np.zeros((seq_len, 2))
-        if smpl_joints.shape[1] >= 2:
-            contact_mask[:, 0] = smpl_joints[:, 0, 2] < 0.1  # Left foot
-            contact_mask[:, 1] = smpl_joints[:, 1, 2] < 0.1  # Right foot
+        # For G1, we'll use a simple heuristic based on root height
+        root_height = root_trans_offset[:, 2]
+        contact_threshold = np.percentile(root_height, 10)  # Bottom 10% as contact
+        contact_mask[:, 0] = root_height < contact_threshold  # Left foot
+        contact_mask[:, 1] = root_height < contact_threshold  # Right foot
         
-        # Create AMASS format structure - same as reference
+        # Create AMASS format structure for G1
         amass_format_motion = {
             'root_trans_offset': root_trans_offset.astype(np.float32),
             'root_rot': root_rot.astype(np.float32),
             'pose_aa': reference_motion['pose_aa'][:seq_len].copy().astype(np.float32),  # Keep original
-            'smpl_joints': smpl_joints.astype(np.float32),
+            'smpl_joints': reference_motion['smpl_joints'][:seq_len].copy().astype(np.float32),  # Keep original for compatibility
             'contact_mask': contact_mask.astype(np.float32),
-            'dof': dof.astype(np.float32),
-            'fps': 30,
-            'block_id': block_id,  # Add block ID for reference
-            'sequence_length': seq_len
+            'dof': dof,
+            'fps': fps,
+            'block_id': block_id,
+            'sequence_length': seq_len,
+            'generation_method': 'g1_vqvae_motionlib_smooth'  # Mark as G1 with motion_lib smoothing
         }
         
         return amass_format_motion
@@ -354,18 +341,21 @@ if __name__ == "__main__":
 
 
 '''
+motion id 1:
+328,117,448,279,334,299,327,280,117,378,395,164,184,151,417,21,83,15,117,206,380,380,380,222
+
 # Generate motion for specific blocks (separate file per block ID)
-python scripts/generate_motion_per_block.py \
+python scripts/generate_motion_per_block_s2.py \
     --config configs/agent.yaml \
-    --checkpoint outputs/run_0_300/best_model.ckpt \
+    --checkpoint outputs/run_0_300_g1/best_model.ckpt \
     --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
     --block_ids "0-10" \
     --output_dir ./outputs/motion_blocks
 
 # Generate motion for all blocks
-python scripts/generate_motion_per_block.py \
+python scripts/generate_motion_per_block_s2.py \
     --config configs/agent.yaml \
-    --checkpoint outputs/run_0_300/best_model.ckpt \
+    --checkpoint outputs/run_0_300_g1/best_model.ckpt \
     --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
     --generate_all \
     --output_dir ./outputs/motion_blocks
