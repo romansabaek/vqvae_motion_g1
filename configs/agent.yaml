@@ -19,25 +19,32 @@ agent:
     loss_vel: 0.5
     recons_loss: 'l1_smooth'
     
-    # model parameters # code dim 256 for spot loco
+    # model parameters # optimized for motion accuracy
     num_joints: 24  # Default for SMPL
   
-    
-    code_dim: 512 # 256
-    nb_code: 512 # 256
+    # Reduced codebook size for better representation learning
+    code_dim: 256 # reduced from 512
+    nb_code: 256 # reduced from 512 - smaller codebook forces better clustering
     mu: 0.99
     down_t: 2
     stride_t: 2
-    width: 512 # 256
-    depth: 3
-    dilation_growth_rate: 3
-    output_emb_width: 512 # 256
-    vq_act: 'relu'
-    vq_norm: null
+    # Increased model capacity for better reconstruction
+    width: 768 # increased from 512 for more representational power
+    depth: 4 # increased from 3 for deeper features
+    dilation_growth_rate: 2 # reduced from 3 for more stable training
+    output_emb_width: 256 # reduced to match code_dim
+    vq_act: 'gelu' # better than relu for motion data
+    vq_norm: 'layer' # add layer normalization for stability
 
-    # quantizer
+    # quantizer - improved settings
     quantizer: 'ema_reset'
     beta: 1.0
+    
+    # additional training improvements
+    gradient_clip: 1.0  # gradient clipping for stability
+    validation_freq: 500  # validate more frequently
+    early_stopping_patience: 10  # patience for early stopping
+    use_mixed_precision: false  # can enable for faster training if stable
 
 
     

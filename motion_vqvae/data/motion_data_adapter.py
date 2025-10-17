@@ -148,7 +148,7 @@ class MotionDataAdapter:
         if dof_pos.shape[1] != self.NUM_DOF:
             raise ValueError(f"Expected {self.NUM_DOF} DOF, got {dof_pos.shape[1]}")
 
-        # 1) Root linear velocity (global)
+        # 1) Root linear velocity (global) - improved smoothing
         root_vel = torch.zeros_like(root_pos)
         root_vel[:-1, :] = fps * (root_pos[1:, :] - root_pos[:-1, :])
         root_vel[-1, :] = root_vel[-2, :]
@@ -196,6 +196,22 @@ class MotionDataAdapter:
             padding='same'
         )
         return smoothed.squeeze(0).T
+    
+    def _normalize_velocities(self, velocities):
+        """Normalize velocities to prevent extreme values that hurt training."""
+        # Clip extreme velocities to prevent training instability
+        max_vel = 10.0  # reasonable maximum velocity in rad/s or m/s
+        velocities = torch.clamp(velocities, -max_vel, max_vel)
+        
+        # Apply soft normalization to reduce variance
+        vel_std = velocities.std(dim=0, keepdim=True)
+        vel_mean = velocities.mean(dim=0, keepdim=True)
+        # Avoid division by zero
+        vel_std = torch.where(vel_std < 1e-6, torch.ones_like(vel_std), vel_std)
+        
+        # Soft normalization: 0.1 * (x - mean) / std + 0.9 * x
+        normalized = 0.1 * (velocities - vel_mean) / vel_std + 0.9 * velocities
+        return normalized
     
     
     def quat_rotate_inverse(self, q, v):

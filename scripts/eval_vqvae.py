@@ -47,15 +47,8 @@ class MotionAccuracyEvaluator:
 
         # Propagate optional eval_stride into config/agent so agent.evaluate_policy_rec uses overlap
         if eval_stride is not None:
-            try:
-                # config may be dict-like OmegaConf; use setitem
-                self.config["eval_stride"] = int(eval_stride)
-            except Exception:
-                pass
-            try:
-                self.agent.config["eval_stride"] = int(eval_stride)
-            except Exception:
-                pass
+            self.config["eval_stride"] = int(eval_stride)
+            self.agent.config["eval_stride"] = int(eval_stride)
 
         # Load motion keys just to know valid range
         print(f"Loading motion data from: {pkl_file}")
@@ -300,5 +293,11 @@ python scripts/eval_vqvae.py \
   --motion_id 0 \
   --output_dir ./evaluation_plots
 
+python scripts/eval_vqvae.py \
+  --config configs/agent.yaml \
+  --checkpoint outputs/run_0_300_v2/best_model.ckpt \
+  --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
+  --motion_id 0 \
+  --output_dir ./evaluation_plots_v2
 
 '''

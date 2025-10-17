@@ -63,6 +63,9 @@ def main():
     parser.add_argument('--device', type=str, default='auto', help='Device to use (cuda/cpu/auto)')
     parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint to resume from')
     parser.add_argument('--output_dir', type=str, default='./outputs', help='Output directory for checkpoints')
+    parser.add_argument('--resume', action='store_true', help='Resume training from latest checkpoint')
+    parser.add_argument('--validate_only', action='store_true', help='Only run validation on existing model')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     args = parser.parse_args()
     
     # Parse motion IDs
@@ -76,6 +79,11 @@ def main():
     else:
         log.info("Motion IDs: All motions")
     
+    # Set random seed for reproducibility
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    log.info(f"Set random seed to: {args.seed}")
+    
     # Setup device
     device = setup_device(args.device)
     log.info(f"Using device: {device}")
@@ -83,6 +91,9 @@ def main():
     # Load configuration
     config_loader = ConfigLoader(args.config)
     config = config_loader.to_dict()
+    
+    # Override seed in config if provided
+    config['seed'] = args.seed
     
     config['device'] = device
     config['motion_file'] = args.motion_file
@@ -148,6 +159,6 @@ python scripts/train_vqvae.py \
   --motion_file /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
   --motion_ids "0-300" \
   --device auto \
-  --output_dir ./outputs/run_0_300
+  --output_dir ./outputs/run_0_300_v2
 
 '''

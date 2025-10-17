@@ -42,14 +42,8 @@ class AMASSFormatGenerator:
 
         # Allow overriding evaluation stride for overlapped reconstruction
         if eval_stride is not None:
-            try:
-                self.config["eval_stride"] = int(eval_stride)
-            except Exception:
-                pass
-            try:
-                self.agent.config["eval_stride"] = int(eval_stride)
-            except Exception:
-                pass
+            self.config["eval_stride"] = int(eval_stride)
+            self.agent.config["eval_stride"] = int(eval_stride)
 
         # Ensure stats attributes exist; they may be restored later or computed per-motion
         if not hasattr(self.agent, "mean"):
@@ -72,55 +66,6 @@ class AMASSFormatGenerator:
         print(f"Using device: {self.agent.device}")
 
         initialize_model(self.agent, self.config, self.frame_size, checkpoint_path)
-
-    def _initialize_model(self):
-        """Initialize and load the trained VQVAE model & stats."""
-        from motion_vqvae.models.models import MotionVQVAE
-
-        # Ensure frame_size is in config for the model
-        self.agent.config["frame_size"] = int(self.frame_size)
-
-        # Build model
-        self.agent.model = MotionVQVAE(
-            self.agent,
-            self.config["nb_code"],
-            self.config["code_dim"],
-            self.config["output_emb_width"],
-            self.config["down_t"],
-            self.config["stride_t"],
-            self.config["width"],
-            self.config["depth"],
-            self.config["dilation_growth_rate"],
-            self.config["vq_act"],
-            self.config["vq_norm"],
-        ).to(self.agent.device)
-
-        # Load checkpoint
-        print(f"Loading checkpoint: {self.checkpoint_path}")
-        ckpt = torch.load(self.checkpoint_path, map_location=self.agent.device)
-        self.agent.model.load_state_dict(ckpt["model"])
-        self.agent.model.eval()
-
-        # Try to restore training stats (preferred); fallback to per-file stats later
-        mean_ckpt = ckpt.get("mean", None)
-        std_ckpt = ckpt.get("std", None)
-        if mean_ckpt is not None and std_ckpt is not None:
-            mean_t = torch.as_tensor(mean_ckpt, dtype=torch.float32, device=self.agent.device)
-            std_t = torch.as_tensor(std_ckpt, dtype=torch.float32, device=self.agent.device)
-            # Guard shape
-            if mean_t.numel() == self.frame_size and std_t.numel() == self.frame_size:
-                self.agent.mean = mean_t
-                self.agent.std = std_t
-            else:
-                print("[Warn] ckpt mean/std size mismatch; will compute per-motion stats later.")
-                self.agent.mean = None
-                self.agent.std = None
-        else:
-            self.agent.mean = None
-            self.agent.std = None
-
-        print("Model initialized.")
-        print("space: global")
 
     def generate_amass_format_pkl(self, motion_ids: List[int], output_dir: Optional[str] = None) -> Tuple[List[str], str]:
         """Generate one PKL per motion id (global/world export)."""
@@ -231,6 +176,12 @@ python scripts/generate_motion_from_vqvae_s2.py \
   --motion_ids "1" 
 
 
+
+python scripts/generate_motion_from_vqvae_s2.py \
+  --config configs/agent.yaml \
+  --checkpoint outputs/run_0_300_v2/best_model.ckpt \
+  --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
+  --motion_ids "1" 
 
 python scripts/generate_motion_from_vqvae_s2.py \
     --config configs/agent.yaml \
