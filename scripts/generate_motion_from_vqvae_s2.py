@@ -45,26 +45,27 @@ class AMASSFormatGenerator:
             self.config["eval_stride"] = int(eval_stride)
             self.agent.config["eval_stride"] = int(eval_stride)
 
-        # Ensure stats attributes exist; they may be restored later or computed per-motion
-        if not hasattr(self.agent, "mean"):
-            self.agent.mean = None
-        if not hasattr(self.agent, "std"):
-            self.agent.std = None
-
         # Load original AMASS data
         print(f"Loading original AMASS data from: {input_pkl_file}")
         self.original_motions, self.original_keys = load_original_pkl(input_pkl_file)
         print(f"Loaded {len(self.original_keys)} original motions")
 
-        # Infer frame size and initialize model
-        print("Loading motion data in MVQ format to infer frame_size...")
-        mocap_data0, end_indices0, frame_size0 = infer_frame_size(self.motion_adapter, input_pkl_file, [0])
-        if isinstance(mocap_data0, torch.Tensor):
-            mocap_data0 = mocap_data0.to(self.agent.device)
-        self.mocap_data, self.end_indices, self.frame_size = mocap_data0, end_indices0, int(frame_size0)
-        print(f"Loaded motion data: {self.mocap_data.shape}, frame_size: {self.frame_size}")
+        # Load multiple motions for proper normalization statistics (same as eval_vqvae.py)
+        max_motions_for_stats = min(300, len(self.original_keys))
+        subset_motion_ids = list(range(max_motions_for_stats))
+        print(f"Loading first {max_motions_for_stats} motions for normalization stats...")
+        
+        mocap_data, end_indices, frame_size = self.motion_adapter.load_motion_data(
+            input_pkl_file, subset_motion_ids
+        )
+        
+        print(f"Loaded data for stats: shape={mocap_data.shape}, frame_size={frame_size}")
         print(f"Using device: {self.agent.device}")
 
+        # Calculate normalization stats and initialize model (same as eval_vqvae.py)
+        self.agent.frame_size = int(frame_size)
+        self.frame_size = int(frame_size)  # Store for later use
+        ensure_stats(self.agent, mocap_data)
         initialize_model(self.agent, self.config, self.frame_size, checkpoint_path)
 
     def generate_amass_format_pkl(self, motion_ids: List[int], output_dir: Optional[str] = None) -> Tuple[List[str], str]:
@@ -97,17 +98,6 @@ class AMASSFormatGenerator:
             self.agent.end_indices = end_indices
             self.agent.frame_size = int(frame_size)
 
-            # Normalization stats: prefer training stats from ckpt; otherwise fallback to per-file stats
-            if self.agent.mean is None or self.agent.std is None:
-                mean = mocap_data.mean(dim=0)
-                std = mocap_data.std(dim=0)
-                std = torch.where(std == 0, torch.ones_like(std), std)
-                self.agent.mean = mean.to(self.agent.device)
-                self.agent.std = std.to(self.agent.device)
-
-            # Sanity: ensure mean/std device match model
-            self.agent.mean = self.agent.mean.to(self.agent.device)
-            self.agent.std = self.agent.std.to(self.agent.device)
 
             # Reconstruct with the VQVAE
             with torch.no_grad():
@@ -183,10 +173,5 @@ python scripts/generate_motion_from_vqvae_s2.py \
   --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
   --motion_ids "1" 
 
-python scripts/generate_motion_from_vqvae_s2.py \
-    --config configs/agent.yaml \
-    --checkpoint outputs/run_0_300/best_model.ckpt \
-    --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
-    --motion_ids "0-20"
 
 '''
