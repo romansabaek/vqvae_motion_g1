@@ -148,6 +148,6 @@ python scripts/train_vqvae.py \
   --motion_file /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
   --motion_ids "0-300" \
   --device auto \
-  --output_dir ./outputs/run_0_300_g1
+  --output_dir ./outputs/run_0_300
 
 '''

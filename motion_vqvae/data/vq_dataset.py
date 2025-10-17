@@ -7,14 +7,6 @@ import random
 
 class MotionVQDataset(Dataset):
     def __init__(self, mocap_data: torch.Tensor, end_indices: list, window_size: int, mean: torch.Tensor, std: torch.Tensor):
-        """
-        Args:
-            mocap_data (np.ndarray): (총 프레임 수, 관절 채널 수) 형태의 전체 모션 데이터
-            end_indices (list): 각 모션 시퀀스의 끝 인덱스 리스트
-            window_size (int): 학습에 사용할 프레임 윈도우 크기
-            mean (np.ndarray): 정규화를 위한 평균값
-            std (np.ndarray): 정규화를 위한 표준편차값
-        """
         self.window_size = window_size
         self.mean = mean
         self.std = std

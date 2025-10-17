@@ -1,65 +1,67 @@
-import copy
-from typing import Any
-from easydict import EasyDict
+"""
+Motion data adapter for G1 humanoid AMASS data.
+Converts G1 humanoid motion data to MVQ format for VQ-VAE training.
+Optimized for G1 humanoid with 23 DOF and proper local frame features.
+"""
 
-import numpy as np
 import torch
-import torch.nn.functional as F
-from typing import List, Optional, Tuple
+import numpy as np
 from pathlib import Path
-
-from protomotions.utils.motion_lib import MotionLib
-from protomotions.simulator.base_simulator.robot_state import RobotState
-from protomotions.simulator.base_simulator.config import RobotConfig
-
-from protomotions.envs.mimic.mimic_utils import dof_to_local
-from isaac_utils import torch_utils, rotations
-
+from typing import Tuple, Optional, Dict, Any
 import logging
-log = logging.getLogger(__name__)
+import joblib
+from .torch_utils import quat_diff, quat_to_exp_map, slerp, normalize_angle
 
-class MotionLibMVQ(MotionLib):
+logger = logging.getLogger(__name__)
+
+class MotionLib_G1():
     
-    # SMPL has exactly 24 joints - verify this matches the config
-    @property
+    NUM_DOF = 23  # G1 humanoid has 23 DOF
+    ROOT_DELTAS_DIM = 4  # dx, dy, dz, dyaw (local frame)
+    DOF_POSITIONS_DIM = NUM_DOF  # 23 DOF positions
+    DOF_VELOCITIES_DIM = NUM_DOF  # 23 DOF velocities
+    # Note: Removed joint orientations for G1 - using DOF-based representation
+    TOTAL_FRAME_SIZE = ROOT_DELTAS_DIM + DOF_POSITIONS_DIM + DOF_VELOCITIES_DIM  # 4 + 23 + 23 = 50
+    
+    # Feature Indices (G1 Humanoid)
+    ROOT_DELTAS_START = 0
+    ROOT_DELTAS_END = ROOT_DELTAS_DIM  # 0:4
+    DOF_POSITIONS_START = ROOT_DELTAS_END  # 4
+    DOF_POSITIONS_END = DOF_POSITIONS_START + DOF_POSITIONS_DIM  # 4:27
+    DOF_VELOCITIES_START = DOF_POSITIONS_END  # 27
+    DOF_VELOCITIES_END = DOF_VELOCITIES_START + DOF_VELOCITIES_DIM  # 27:50
+    
+    # Motion Parameters
+    FPS = 30  # Frames per second
+    DT = 1.0 / FPS  # Time step
+    
     def FRAME_SIZE(self):
-        # New frame definition for Motion-VQVAE
-        #   0-1-2   : global root velocity in x / y / z directions
-	#   3   : global root angular velocity (wz) -> only wz is used
-        #   4-(4+3N−1)                  : local joint positions  (N = num_joints)
-        #   4+3N-(4+6N−1)               : local joint velocities
-        #   4+6N-(4+15N−1)              : joint orientations (9-D per joint)
-        if self.num_joints == 24:
-            return 4 + (self.num_joints * 3) + (self.num_joints * 3) + (self.num_joints * 9)  # 4 + 72 + 72 + 216 = 364 for SMPL
+        return self.TOTAL_FRAME_SIZE
 
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.device = torch.device(config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu'))
         
-    ## smpl
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        # Motion data storage
+        self.mocap_data = None
+        self.end_indices = None
+        self.frame_size = None
+
         self._mvq_cache = {}
-        self.num_joints = len(self.robot_config.body_names)
-
         
-    
-    """
-    ============================================================================
-    ============================================================================
-    """
 
     def get_motion_state(
             self, motion_ids, motion_times, joint_3d_format="exp_map"
-    ) -> RobotState:
-        motion_len = self.state.motion_lengths[motion_ids]
+    ):
+        motion_len = self.motion_lengths[motion_ids]
         motion_times = motion_times.clip(min=0).clip(
             max=motion_len
         )  # Making sure time is in bounds
 
-        num_frames = self.state.motion_num_frames[motion_ids]
-        dt = self.state.motion_dt[motion_ids]
+        num_frames = self.motion_num_frames[motion_ids]
+        dt = self.motion_dt[motion_ids]
 
-        frame_idx0, frame_idx1, blend = self._calc_frame_blend(
-            motion_times, motion_len, num_frames, dt
-        )
+        frame_idx0, frame_idx1, blend = self._calc_frame_blend(motion_times, motion_len, num_frames, dt)
 
         f0l = frame_idx0 + self.length_starts[motion_ids]
         f1l = frame_idx1 + self.length_starts[motion_ids]
@@ -127,49 +129,67 @@ class MotionLibMVQ(MotionLib):
         root_pos: Tensor = (1.0 - blend) * root_pos0 + blend * root_pos1
         root_pos[:, 2] += self.ref_height_adjust
 
-        root_rot: Tensor = torch_utils.slerp(root_rot0, root_rot1, blend)
+        root_rot: Tensor = slerp(root_rot0, root_rot1, blend)
 
         blend_exp = blend.unsqueeze(-1)
         key_body_pos = (1.0 - blend_exp) * key_body_pos0 + blend_exp * key_body_pos1
         key_body_pos[:, :, 2] += self.ref_height_adjust
 
-        if hasattr(self, "dof_pos"):  # H1 G1 joints
-            dof_pos = (1.0 - blend) * self.dof_pos[f0l] + blend * self.dof_pos[f1l]
-            # local_rot = torch_utils.slerp(
-            #     local_rot0, local_rot1, torch.unsqueeze(blend, axis=-1)
-            # )
-        else:
-            local_rot = torch_utils.slerp(
-                local_rot0, local_rot1, torch.unsqueeze(blend, axis=-1)
-            )
-            dof_pos: Tensor = self._local_rotation_to_dof(local_rot, joint_3d_format)
-
-        root_vel = (1.0 - blend) * root_vel0 + blend * root_vel1
-        root_ang_vel = (1.0 - blend) * root_ang_vel0 + blend * root_ang_vel1
-        dof_vel = (1.0 - blend) * dof_vel0 + blend * dof_vel1
-        rigid_body_pos = (1.0 - blend_exp) * rigid_body_pos0 + blend_exp * rigid_body_pos1
-        rigid_body_pos[:, :, 2] += self.ref_height_adjust
-        rigid_body_rot = torch_utils.slerp(rigid_body_rot0, rigid_body_rot1, blend_exp)
-        global_vel = (1.0 - blend_exp) * global_vel0 + blend_exp * global_vel1
-        global_ang_vel = (
-            1.0 - blend_exp
-        ) * global_ang_vel0 + blend_exp * global_ang_vel1
-
-        motion_state = RobotState(
-            root_pos=root_pos,
-            root_rot=root_rot,
-            root_vel=root_vel,
-            root_ang_vel=root_ang_vel,
-            key_body_pos=key_body_pos,
-            dof_pos=dof_pos,
-            dof_vel=dof_vel,
-            rigid_body_pos=rigid_body_pos,
-            rigid_body_rot=rigid_body_rot,
-            rigid_body_vel=global_vel,
-            rigid_body_ang_vel=global_ang_vel,
+        # Always compute local joint rotations by slerping, for return/debug consistency
+        local_rot = slerp(
+            local_rot0, local_rot1, torch.unsqueeze(blend, axis=-1)
         )
 
-        return motion_state, local_rot
+        # DOF positions follow MotionLib behavior: interpolate joint configuration
+        if hasattr(self, "dof_pos"):  # H1 G1 joints
+            dof_pos = (1.0 - blend) * self.dof_pos[f0l] + blend * self.dof_pos[f1l]
+        else:
+            dof_pos: Tensor = self._local_rotation_to_dof(local_rot, joint_3d_format)
+
+        # Match reference_code/motion_lib.py: use velocities at frame_idx0 (no blending)
+        root_vel = root_vel0
+        root_ang_vel = root_ang_vel0
+        dof_vel = dof_vel0
+        rigid_body_pos = (1.0 - blend_exp) * rigid_body_pos0 + blend_exp * rigid_body_pos1
+        rigid_body_pos[:, :, 2] += self.ref_height_adjust
+        rigid_body_rot = slerp(rigid_body_rot0, rigid_body_rot1, blend_exp)
+        global_vel = global_vel0
+        global_ang_vel = global_ang_vel0
+
+        # Return only tensors (no RobotState), sufficient for downstream usage
+        return (
+            root_pos,
+            root_rot,
+            dof_pos,
+            dof_vel,
+            root_vel,
+            root_ang_vel,
+            local_rot,
+        )
+
+    def _calc_frame_blend(self, motion_times, motion_len, num_frames, dt):
+        """
+        Compute two neighboring frame indices and the interpolation blend factor.
+        Mirrors reference_code/motion_lib.py but operates on provided per-motion scalars.
+        Args:
+            motion_times: (B,) tensor of times in seconds
+            motion_len:   (B,) tensor of total motion lengths in seconds
+            num_frames:   (B,) tensor of frame counts per motion
+            dt:           (B,) tensor of frame time deltas (unused here but kept for parity)
+        Returns:
+            frame_idx0, frame_idx1, blend
+        """
+        # phase in [0, 1]
+        phase = motion_times / motion_len
+        phase = torch.clip(phase, 0.0, 1.0)
+
+        # integer base frame and next frame within the motion
+        frame_idx0 = (phase * (num_frames - 1)).long()
+        frame_idx1 = torch.min(frame_idx0 + 1, num_frames - 1)
+
+        # fractional blend between 0 and 1
+        blend = phase * (num_frames - 1) - frame_idx0.float()
+        return frame_idx0, frame_idx1, blend
 
 
     def get_mvq_batch(self, motion_ids: torch.Tensor, motion_times: torch.Tensor):
@@ -190,25 +210,24 @@ class MotionLibMVQ(MotionLib):
             (B,4) quaternion (w-last) of the root at the sampled time – returned
             for any downstream usage (unchanged from the previous API).
         """
-        current_states, curr_local_rot = self.get_motion_state(motion_ids, motion_times)
+        root_pos_curr, root_rot_curr, dof_pos_curr, _, _, _, curr_local_rot = self.get_motion_state(motion_ids, motion_times)
 
-        # Get previous frame states for velocity/delta computation
+        # Previous time step to compute finite-difference deltas
         prev_times = torch.clamp(motion_times - (1.0 / 30.0), min=0.0)  # Assume 30 FPS
-        prev_states, prev_local_rot = self.get_motion_state(motion_ids, prev_times)
+        root_pos_prev, root_rot_prev, dof_pos_prev, _, _, _, prev_local_rot = self.get_motion_state(motion_ids, prev_times)
 
+        # For retargeted G1, we only have root pose + DOF positions/velocities
+        dt = torch.tensor(1/30, dtype=torch.float32, device=self.device)
         mvq_frames = self._convert_robot_states_to_mvq(
-            motion_ids, 
+            motion_ids,
             motion_times,
-            prev_states.root_pos, 
-            prev_states.root_rot,
-            current_states.root_pos, 
-            current_states.root_rot, 
-            prev_local_rot,
-            curr_local_rot,
-            prev_states.rigid_body_pos,
-            current_states.rigid_body_pos,
-            torch.tensor(1/30, dtype=torch.float32, device=self.device),
-            w_last=True
+            root_pos_prev,
+            root_rot_prev,
+            root_pos_curr,
+            root_rot_curr,
+            dof_pos_prev,
+            dof_pos_curr,
+            dt,
         )
 
         return mvq_frames
@@ -218,21 +237,19 @@ class MotionLibMVQ(MotionLib):
         motion_ids: torch.Tensor,
         motion_times: torch.Tensor,
         root_pos_t: torch.Tensor,           # [B,3]
-        root_rot_t: torch.Tensor,           # [B,4]  w-last
+        root_rot_t: torch.Tensor,           # [B,4] (xyzw)
         root_pos_tp1: torch.Tensor,         # [B,3]
         root_rot_tp1: torch.Tensor,         # [B,4]
-        local_rot_t: torch.Tensor,          # [B,24,4]
-        local_rot_tp1: torch.Tensor,        # [B,24,4]
-        joint_pos_t: torch.Tensor,          # [B,24,3] global
-        joint_pos_tp1: torch.Tensor,        # [B,24,3] global
-        dt: torch.Tensor,                   # [B]  seconds
-        w_last,
+        dof_pos_t: torch.Tensor,            # [B,NUM_DOF]
+        dof_pos_tp1: torch.Tensor,          # [B,NUM_DOF]
+        dt: torch.Tensor,                   # scalar tensor seconds
     ) -> torch.Tensor:
         """
-        Convert a pair of consecutive frames (t, t+1) into a
-        single 1-D vector compatible with the Motion-VAE paper.
+        Convert consecutive frames to MVQ format for G1-retargeted data.
+        We only use root planar delta + yaw delta and DOF pos/vel.
+        Output layout (TOTAL_FRAME_SIZE = 50):
+          [dx_local, dy_local, dz_local, d_yaw, 23 dof_pos, 23 dof_vel]
         """
-        # B = root_pos_t.shape[0]
         B = motion_ids.shape[0]
 
         is_first_frame = (motion_times <= 1e-6)
@@ -240,56 +257,40 @@ class MotionLibMVQ(MotionLib):
 
         mvq_frames = torch.zeros(B, self.FRAME_SIZE, dtype=torch.float32, device=self.device)
 
-        # ------------------------------------------------------------------
-        # 1. Δ root (x, y, yaw)  – rotate displacement into heading frame
-        # ------------------------------------------------------------------
-        heading_q_t = torch_utils.calc_heading_quat(
-            root_rot_t, w_last=w_last
-        )                       # [B,4]
-        heading_inv_t = rotations.quat_conjugate(heading_q_t, w_last=w_last)
-        delta_xy_world = root_pos_tp1[:, :3] - root_pos_t[:, :3]       # [B,3]
-        delta_xy_world = torch.cat([delta_xy_world, delta_xy_world.new_zeros(B, 1)], dim=-1)
-        delta_xy_local = rotations.quat_apply(heading_inv_t, delta_xy_world, w_last=w_last)[..., :3]
+        # Heading-aligned root delta in local frame
+        # Compute heading yaw from root quaternion: project onto yaw
+        # Assume root_rot is xyzw here; our utils are xyzw-based
+        # heading quaternion (rotate world into heading frame)
+        # Extract yaw from quats via atan2-like approach on forward vector
+        # Simpler: use z-rotation from quaternion by converting to exp-map around z approximated by axis
 
-        yaw_t   = torch_utils.calc_heading(root_rot_t,  w_last=w_last)   # [B]
-        yaw_tp1 = torch_utils.calc_heading(root_rot_tp1, w_last=w_last)
-        delta_yaw = torch_utils.normalize_angle(yaw_tp1 - yaw_t)       # wrap to [-π,π]
+        # Use finite-difference in world frame then rotate into heading frame at time t
+        delta_world = root_pos_tp1 - root_pos_t                                # [B,3]
+        # Construct heading rotation from root_rot_t: only yaw around z
+        # Compute yaw from quaternion
+        x, y, z, w = root_rot_t.unbind(-1)
+        # yaw from quaternion assuming xyzw
+        yaw_t = torch.atan2(2.0*(w*z + x*y), 1.0 - 2.0*(y*y + z*z))
+        x2, y2, z2, w2 = root_rot_tp1.unbind(-1)
+        yaw_tp1 = torch.atan2(2.0*(w2*z2 + x2*y2), 1.0 - 2.0*(y2*y2 + z2*z2))
+        d_yaw = normalize_angle(yaw_tp1 - yaw_t)
 
-        # root_block = torch.stack([delta_xy_local[:,0], delta_xy_local[:,1], delta_yaw], dim=-1)  # [B,3]
-        mvq_frames[non_first_mask, 0] = delta_xy_local[non_first_mask,0]
-        mvq_frames[non_first_mask, 1] = delta_xy_local[non_first_mask,1]
-	mvq_frames[non_first_mask, 2] = delta_xy_local[non_first_mask,2]
-        mvq_frames[non_first_mask, 3] = delta_yaw[non_first_mask]
+        # Rotate delta into local heading frame at t
+        cos_y = torch.cos(-yaw_t)
+        sin_y = torch.sin(-yaw_t)
+        dx = cos_y * delta_world[:, 0] - sin_y * delta_world[:, 1]
+        dy = sin_y * delta_world[:, 0] + cos_y * delta_world[:, 1]
+        dz = delta_world[:, 2]
 
-        # ------------------------------------------------------------------
-        # 2. joint positions (root space)
-        # ------------------------------------------------------------------
-        joint_pos_rel = joint_pos_t - root_pos_t.unsqueeze(1)          # [B,24,3]
-        heading_inv_joint_rep = heading_inv_t[:, None, :].expand(-1, len(self.robot_config.body_names), -1)
-        joint_pos_local = rotations.quat_apply(heading_inv_joint_rep,
-                                               joint_pos_rel,
-                                               w_last=w_last)            # [B,24,3]
-        jp_block = joint_pos_local.reshape(B, -1)                      # [B,72]
-        mvq_frames[:, 4:4+(self.num_joints*3)] = jp_block
+        mvq_frames[non_first_mask, 0] = dx[non_first_mask]
+        mvq_frames[non_first_mask, 1] = dy[non_first_mask]
+        mvq_frames[non_first_mask, 2] = dz[non_first_mask]
+        mvq_frames[non_first_mask, 3] = d_yaw[non_first_mask]
 
-        # ------------------------------------------------------------------
-        # 3. joint velocities (root space)
-        # ------------------------------------------------------------------
-        joint_pos_rel_tp1 = joint_pos_tp1 - root_pos_t.unsqueeze(1)    # note: use
-        joint_pos_local_tp1 = rotations.quat_apply(heading_inv_joint_rep,
-                                                   joint_pos_rel_tp1,
-                                                   w_last=w_last)        # [B,24,3]
-        joint_vel_local = (joint_pos_local_tp1 - joint_pos_local) / dt.view(-1,1,1)
-        jv_block = joint_vel_local.reshape(B, -1)                      # [B,72]
-        mvq_frames[non_first_mask, 4+(self.num_joints*3):4+(self.num_joints*6)] = jv_block[non_first_mask]
-
-        # ------------------------------------------------------------------
-        # 4. joint 9-D orientation
-        # ------------------------------------------------------------------
-        # Flatten 9-D columns for every joint at *t*
-        rot_mats = rotations.quaternion_to_matrix(local_rot_t, w_last=w_last)  # [B,24,3,3]
-        rot_6d = rot_mats.reshape(B, -1) #9
-        mvq_frames[:, 4+(self.num_joints*6):] = rot_6d
+        # DOF pos (current frame) and DOF vel (FD)
+        mvq_frames[:, 4:4+self.NUM_DOF] = dof_pos_tp1
+        dof_vel = (dof_pos_tp1 - dof_pos_t) / dt
+        mvq_frames[non_first_mask, 4+self.NUM_DOF:4+self.NUM_DOF*2] = dof_vel[non_first_mask]
 
         return mvq_frames
 
@@ -366,12 +367,12 @@ class MotionLibMVQ(MotionLib):
     # for playing
     # ======================================================
 
-    def mvq_frame_to_robot_state(
+    def mvq_frame_step(
         self,
         pose_vec: torch.Tensor,          # [B,364] – one MVQ frame
         prev_root_pos: torch.Tensor,     # [B,3]
         prev_heading: torch.Tensor,      # [B]   – yaw angle at t-1
-    ) -> Tuple[RobotState, torch.Tensor]:  # returns state, new_heading
+    ):
         """
         Reconstruct root & joint rotations from the 291-D MVQ pose
         and pack them into a RobotState so that `Simulator.set_state()`
@@ -416,18 +417,6 @@ class MotionLibMVQ(MotionLib):
         dof_pos = self._local_rotation_to_dof(local_quat, joint_3d_format="exp_map")
         
         # print("===============================")
-        # ---------- Pack RobotState ----------
-        state = RobotState(
-            root_pos        = new_root_pos,
-            root_rot        = root_rot_aligned,
-            root_vel        = torch.zeros_like(new_root_pos),
-            root_ang_vel    = torch.zeros_like(new_heading).unsqueeze(-1).repeat(1,3),
-            key_body_pos    = torch.zeros_like(jp_world[:, self.key_body_ids]), #jp_world[:, self.key_body_ids],
-            dof_pos         = dof_pos,
-            dof_vel         = torch.zeros_like(dof_pos),
-            rigid_body_pos  = torch.zeros_like(jp_world), #jp_world,
-            rigid_body_rot  = torch.zeros((B, num_joints, 4), device=self.device), # local_quat
-            rigid_body_vel  = torch.zeros_like(jp_world),
-            rigid_body_ang_vel = torch.zeros_like(jp_world),
-        )
-        return state, new_root_pos.detach(), new_heading.detach(), local_quat.detach()
+        # Return plain tensors (no RobotState):
+        # new_root_pos, new_heading, root_rot_aligned, dof_pos, local_quat
+        return new_root_pos.detach(), new_heading.detach(), root_rot_aligned.detach(), dof_pos.detach(), local_quat.detach()

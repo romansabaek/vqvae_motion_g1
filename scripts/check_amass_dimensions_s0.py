@@ -71,7 +71,6 @@ class AMASSDimensionChecker:
             'keys': list(motion_dict.keys()),
             'dimensions': {},
             'data_types': {},
-            'ranges': {},
             'frame_count': 0
         }
         
@@ -92,66 +91,160 @@ class AMASSDimensionChecker:
                 analysis['dimensions'][key] = shape
                 analysis['data_types'][key] = str(dtype)
                 
-                # Calculate ranges for numeric data
-                if np.issubdtype(dtype, np.number) and data_array.size > 0:
-                    if data_array.ndim == 1:
-                        analysis['ranges'][key] = {
-                            'min': float(np.min(data_array)),
-                            'max': float(np.max(data_array)),
-                            'mean': float(np.mean(data_array)),
-                            'std': float(np.std(data_array))
-                        }
-                    elif data_array.ndim == 2:
-                        analysis['ranges'][key] = {
-                            'shape': shape,
-                            'min_per_dim': [float(np.min(data_array[:, i])) for i in range(min(3, shape[1]))],
-                            'max_per_dim': [float(np.max(data_array[:, i])) for i in range(min(3, shape[1]))],
-                            'mean_per_dim': [float(np.mean(data_array[:, i])) for i in range(min(3, shape[1]))],
-                            'std_per_dim': [float(np.std(data_array[:, i])) for i in range(min(3, shape[1]))]
-                        }
-                    else:
-                        analysis['ranges'][key] = {
-                            'shape': shape,
-                            'min': float(np.min(data_array)),
-                            'max': float(np.max(data_array))
-                        }
-                else:
-                    analysis['ranges'][key] = {'type': 'non_numeric', 'sample': str(data)[:100]}
-                
                 # Determine frame count (use first numeric array with time dimension)
                 if analysis['frame_count'] == 0 and data_array.ndim >= 1 and np.issubdtype(dtype, np.number):
                     analysis['frame_count'] = data_array.shape[0]
                 
                 print(f"    {key}: {shape} ({dtype})")
                 
-                # Print detailed info for key motion components
-                if key in ['root_trans_offset', 'root_rot', 'dof']:
-                    if data_array.ndim == 2:
-                        print(f"      └─ {key} range: [{np.min(data_array):.4f}, {np.max(data_array):.4f}]")
-                        if key == 'root_trans_offset':
-                            print(f"      └─ Position range (m): X[{np.min(data_array[:, 0]):.3f}, {np.max(data_array[:, 0]):.3f}], "
-                                  f"Y[{np.min(data_array[:, 1]):.3f}, {np.max(data_array[:, 1]):.3f}], "
-                                  f"Z[{np.min(data_array[:, 2]):.3f}, {np.max(data_array[:, 2]):.3f}]")
-                        elif key == 'root_rot':
-                            print(f"      └─ Quaternion range: [{np.min(data_array):.4f}, {np.max(data_array):.4f}]")
-                        elif key == 'dof':
-                            print(f"      └─ DOF range (rad): [{np.min(data_array):.4f}, {np.max(data_array):.4f}]")
+                # Analyze quaternion order if this is root_rot
+                if key == 'root_rot' and data_array.ndim == 2 and data_array.shape[1] == 4:
+                    self._analyze_quaternion_order(data_array)
                 
             except Exception as e:
                 print(f"    {key}: Error analyzing - {e}")
                 analysis['dimensions'][key] = f"Error: {e}"
                 analysis['data_types'][key] = str(type(data))
-                analysis['ranges'][key] = {'error': str(e)}
         
         print(f"  📏 Total frames: {analysis['frame_count']}")
         
         return analysis
     
+    def _analyze_quaternion_order(self, quat_data: np.ndarray):
+        """Simple quaternion order analysis."""
+        if quat_data.shape[1] != 4:
+            print(f"      ⚠️  Invalid quaternion dimensions: {quat_data.shape[1]} (expected 4)")
+            return
+        
+        # Sample a few quaternions
+        sample_size = min(5, quat_data.shape[0])
+        sample_quats = quat_data[:sample_size]
+        
+        print(f"      🔍 Quaternion Order Analysis (sample of {sample_size}):")
+        
+        # Check component magnitudes
+        w0_mag = np.mean(np.abs(sample_quats[:, 0]))  # First component
+        w3_mag = np.mean(np.abs(sample_quats[:, 3]))  # Last component
+        
+        print(f"        First component (index 0) avg magnitude: {w0_mag:.4f}")
+        print(f"        Last component (index 3) avg magnitude: {w3_mag:.4f}")
+        
+        # Simple heuristic: which component is closer to 1?
+        if w0_mag > 0.8:
+            print(f"        🎯 Likely format: WXYZ [w, x, y, z]")
+        elif w3_mag > 0.8:
+            print(f"        🎯 Likely format: XYZW [x, y, z, w]")
+        else:
+            print(f"        ⚠️  Cannot determine format clearly")
+        
+        # Show sample quaternions
+        print(f"        Sample quaternions:")
+        for i in range(min(3, sample_size)):
+            q = sample_quats[i]
+            print(f"          [{i}]: [{q[0]:.4f}, {q[1]:.4f}, {q[2]:.4f}, {q[3]:.4f}]")
+
+    def _analyze_quaternion_format(self, quat_data: np.ndarray, key: str):
+        """Analyze quaternion format and order."""
+        if quat_data.shape[1] != 4:
+            print(f"      ⚠️  Invalid quaternion dimensions: {quat_data.shape[1]} (expected 4)")
+            return
+        
+        # Sample a few quaternions for analysis
+        sample_size = min(10, quat_data.shape[0])
+        sample_indices = np.linspace(0, quat_data.shape[0]-1, sample_size, dtype=int)
+        sample_quats = quat_data[sample_indices]
+        
+        print(f"      🔍 Quaternion Analysis (sample of {sample_size} quaternions):")
+        
+        # Check quaternion normalization
+        norms = np.linalg.norm(sample_quats, axis=1)
+        norm_mean = np.mean(norms)
+        norm_std = np.std(norms)
+        print(f"        └─ Norm: {norm_mean:.4f} ± {norm_std:.4f} (expected: 1.0)")
+        
+        if abs(norm_mean - 1.0) > 0.1:
+            print(f"        ⚠️  Quaternions are not properly normalized!")
+        
+        # Analyze quaternion component ranges
+        w_range = [np.min(sample_quats[:, 0]), np.max(sample_quats[:, 0])]
+        x_range = [np.min(sample_quats[:, 1]), np.max(sample_quats[:, 1])]
+        y_range = [np.min(sample_quats[:, 2]), np.max(sample_quats[:, 2])]
+        z_range = [np.min(sample_quats[:, 3]), np.max(sample_quats[:, 3])]
+        
+        print(f"        └─ Component ranges:")
+        print(f"           W: [{w_range[0]:.4f}, {w_range[1]:.4f}]")
+        print(f"           X: [{x_range[0]:.4f}, {x_range[1]:.4f}]")
+        print(f"           Y: [{y_range[0]:.4f}, {y_range[1]:.4f}]")
+        print(f"           Z: [{z_range[0]:.4f}, {z_range[1]:.4f}]")
+        
+        # Determine likely quaternion order using a better heuristic
+        # For small rotations, w should be close to 1 and xyz should be small
+        # Check which component is closest to 1 on average
+        w0_abs_mean = np.mean(np.abs(sample_quats[:, 0]))  # First component
+        w3_abs_mean = np.mean(np.abs(sample_quats[:, 3]))  # Last component
+        xyz_middle_mean = np.mean(np.abs(sample_quats[:, 1:3]))  # Middle components
+        
+        print(f"        └─ Quaternion Order Analysis:")
+        print(f"           First component (index 0) avg magnitude: {w0_abs_mean:.4f}")
+        print(f"           Last component (index 3) avg magnitude: {w3_abs_mean:.4f}")
+        print(f"           Middle components (1:3) avg magnitude: {xyz_middle_mean:.4f}")
+        
+        # Better heuristic: which end component is closer to 1?
+        # For WXYZ: w (index 0) should be ~1, xyz (1:3) should be small
+        # For XYZW: w (index 3) should be ~1, xyz (0:2) should be small
+        if w0_abs_mean > w3_abs_mean and w0_abs_mean > xyz_middle_mean:
+            print(f"           🎯 Likely format: WXYZ (scalar-first)")
+            print(f"           📝 Format: [w, x, y, z] where w is scalar component")
+        elif w3_abs_mean > w0_abs_mean and w3_abs_mean > xyz_middle_mean:
+            print(f"           🎯 Likely format: XYZW (scalar-last)")
+            print(f"           📝 Format: [x, y, z, w] where w is scalar component")
+        else:
+            print(f"           ⚠️  Cannot determine format clearly - ambiguous quaternion data")
+        
+        # Check for common quaternion patterns
+        # WXYZ: w should typically be larger magnitude for small rotations
+        # XYZW: last component should typically be larger magnitude for small rotations
+        
+        # Additional analysis: check if quaternions represent valid rotations
+        try:
+            # Convert to rotation matrices to validate
+            from scipy.spatial.transform import Rotation
+            rotation = Rotation.from_quat(sample_quats)
+            rotation_matrices = rotation.as_matrix()
+            
+            # Check if rotation matrices are orthogonal (det should be ~1)
+            determinants = np.linalg.det(rotation_matrices)
+            det_mean = np.mean(determinants)
+            det_std = np.std(determinants)
+            
+            print(f"        └─ Rotation Matrix Validation:")
+            print(f"           Determinant: {det_mean:.4f} ± {det_std:.4f} (expected: 1.0)")
+            
+            if abs(det_mean - 1.0) < 0.1:
+                print(f"           ✅ Valid rotation matrices")
+            else:
+                print(f"           ⚠️  Invalid rotation matrices (determinant far from 1)")
+                
+        except ImportError:
+            print(f"        └─ ⚠️  Cannot validate rotation matrices (scipy not available)")
+        except Exception as e:
+            print(f"        └─ ⚠️  Error validating rotation matrices: {e}")
+        
+        # Check for identity quaternions
+        identity_count = np.sum(np.allclose(sample_quats, [1, 0, 0, 0], atol=0.01))
+        if identity_count > 0:
+            print(f"        └─ Identity quaternions found: {identity_count}/{sample_size}")
+        
+        # Check for zero quaternions
+        zero_count = np.sum(np.allclose(sample_quats, [0, 0, 0, 0], atol=0.01))
+        if zero_count > 0:
+            print(f"        └─ ⚠️  Zero quaternions found: {zero_count}/{sample_size}")
+    
     def _generate_summary_report(self, analyses: list):
-        """Generate comprehensive summary report."""
-        print(f"\n" + "="*80)
-        print(f"📊 AMASS DATA DIMENSION SUMMARY REPORT")
-        print(f"="*80)
+        """Generate simple summary report."""
+        print(f"\n" + "="*60)
+        print(f"📊 AMASS DATA SUMMARY")
+        print(f"="*60)
         
         if not analyses:
             print("❌ No analyses to summarize")
@@ -164,146 +257,28 @@ class AMASSDimensionChecker:
         
         print(f"\n🔑 All Keys Found: {sorted(all_keys)}")
         
-        # Analyze consistency across motions
-        key_consistency = {}
-        for key in all_keys:
+        # Show dimensions for each key
+        print(f"\n📋 Key Dimensions:")
+        for key in sorted(all_keys):
             dimensions = []
-            data_types = []
             for analysis in analyses:
                 if key in analysis['dimensions']:
                     dimensions.append(analysis['dimensions'][key])
-                    data_types.append(analysis['data_types'][key])
             
-            key_consistency[key] = {
-                'dimensions': dimensions,
-                'data_types': data_types,
-                'consistent_dimensions': len(set(str(d) for d in dimensions)) == 1,
-                'consistent_types': len(set(data_types)) == 1
-            }
-        
-        print(f"\n📋 Key Consistency Analysis:")
-        for key, consistency in key_consistency.items():
-            status = "✅" if consistency['consistent_dimensions'] and consistency['consistent_types'] else "⚠️ "
-            print(f"  {status} {key}:")
-            print(f"    Dimensions: {consistency['dimensions']}")
-            print(f"    Types: {consistency['data_types']}")
-            if not consistency['consistent_dimensions']:
-                print(f"    ⚠️  Inconsistent dimensions across motions!")
-            if not consistency['consistent_types']:
-                print(f"    ⚠️  Inconsistent data types across motions!")
+            # Show unique dimensions
+            unique_dims = list(set(str(d) for d in dimensions))
+            if len(unique_dims) == 1:
+                print(f"  ✅ {key}: {unique_dims[0]}")
+            else:
+                print(f"  ⚠️  {key}: {unique_dims}")
         
         # Frame count analysis
         frame_counts = [analysis['frame_count'] for analysis in analyses]
         print(f"\n⏱️  Frame Count Analysis:")
         print(f"  Average frames: {np.mean(frame_counts):.1f}")
         print(f"  Frame range: {min(frame_counts)} - {max(frame_counts)}")
-        print(f"  Frame counts: {frame_counts}")
         
-        # G1 Humanoid specific analysis
-        self._analyze_g1_specifics(analyses, key_consistency)
-        
-        # Generate CSV report
-        self._save_csv_report(analyses)
-    
-    def _analyze_g1_specifics(self, analyses: list, key_consistency: dict):
-        """Analyze G1 humanoid specific aspects."""
-        print(f"\n🤖 G1 Humanoid Specific Analysis:")
-        
-        # Check for expected G1 components
-        g1_expected_keys = ['root_trans_offset', 'root_rot', 'dof']
-        g1_optional_keys = ['pose_aa', 'smpl_joints', 'contact_mask', 'fps']
-        
-        print(f"  Required keys for G1:")
-        for key in g1_expected_keys:
-            if key in key_consistency:
-                status = "✅" if key_consistency[key]['consistent_dimensions'] else "⚠️ "
-                dims = key_consistency[key]['dimensions'][0] if key_consistency[key]['dimensions'] else "Unknown"
-                print(f"    {status} {key}: {dims}")
-            else:
-                print(f"    ❌ {key}: Missing!")
-        
-        print(f"  Optional keys:")
-        for key in g1_optional_keys:
-            if key in key_consistency:
-                status = "✅" if key_consistency[key]['consistent_dimensions'] else "⚠️ "
-                dims = key_consistency[key]['dimensions'][0] if key_consistency[key]['dimensions'] else "Unknown"
-                print(f"    {status} {key}: {dims}")
-            else:
-                print(f"    ⚪ {key}: Not present")
-        
-        # Analyze DOF dimensions (should be 23 for G1)
-        if 'dof' in key_consistency and key_consistency['dof']['dimensions']:
-            dof_dims = key_consistency['dof']['dimensions'][0]
-            if len(dof_dims) == 2 and dof_dims[1] == 23:
-                print(f"  ✅ DOF dimension correct for G1 (23 DOF)")
-            else:
-                print(f"  ⚠️  DOF dimension unusual for G1: {dof_dims} (expected: [frames, 23])")
-        
-        # Analyze root position dimensions (should be [frames, 3])
-        if 'root_trans_offset' in key_consistency and key_consistency['root_trans_offset']['dimensions']:
-            root_dims = key_consistency['root_trans_offset']['dimensions'][0]
-            if len(root_dims) == 2 and root_dims[1] == 3:
-                print(f"  ✅ Root position dimension correct: {root_dims}")
-            else:
-                print(f"  ⚠️  Root position dimension unusual: {root_dims} (expected: [frames, 3])")
-        
-        # Analyze root rotation dimensions (should be [frames, 4] for quaternions)
-        if 'root_rot' in key_consistency and key_consistency['root_rot']['dimensions']:
-            rot_dims = key_consistency['root_rot']['dimensions'][0]
-            if len(rot_dims) == 2 and rot_dims[1] == 4:
-                print(f"  ✅ Root rotation dimension correct (quaternions): {rot_dims}")
-            else:
-                print(f"  ⚠️  Root rotation dimension unusual: {rot_dims} (expected: [frames, 4])")
-    
-    def _save_csv_report(self, analyses: list):
-        """Save detailed CSV report."""
-        # Create detailed report
-        detailed_rows = []
-        for analysis in analyses:
-            for key, dims in analysis['dimensions'].items():
-                detailed_rows.append({
-                    'motion_id': analysis['motion_id'],
-                    'motion_key': analysis['motion_key'],
-                    'data_key': key,
-                    'dimensions': str(dims),
-                    'data_type': analysis['data_types'].get(key, 'unknown'),
-                    'frame_count': analysis['frame_count']
-                })
-        
-        # Save detailed report
-        detailed_df = pd.DataFrame(detailed_rows)
-        detailed_file = Path(self.pkl_file_path).parent / "amass_dimensions_detailed.csv"
-        detailed_df.to_csv(detailed_file, index=False)
-        
-        # Create summary report
-        summary_rows = []
-        all_keys = set()
-        for analysis in analyses:
-            all_keys.update(analysis['keys'])
-        
-        for key in all_keys:
-            dims_list = []
-            types_list = []
-            for analysis in analyses:
-                if key in analysis['dimensions']:
-                    dims_list.append(str(analysis['dimensions'][key]))
-                    types_list.append(analysis['data_types'][key])
-            
-            summary_rows.append({
-                'data_key': key,
-                'dimensions': '; '.join(set(dims_list)),
-                'data_types': '; '.join(set(types_list)),
-                'frequency': len(dims_list),
-                'consistent': len(set(dims_list)) == 1
-            })
-        
-        summary_df = pd.DataFrame(summary_rows)
-        summary_file = Path(self.pkl_file_path).parent / "amass_dimensions_summary.csv"
-        summary_df.to_csv(summary_file, index=False)
-        
-        print(f"\n📄 Reports saved:")
-        print(f"  - Detailed: {detailed_file}")
-        print(f"  - Summary: {summary_file}")
+        print(f"\n🎉 Analysis complete! Analyzed {len(analyses)} motions.")
 
 
 def main():
@@ -345,18 +320,18 @@ if __name__ == "__main__":
 
 '''
 # Check dimensions of specific motions
-python scripts/check_amass_dimensions.py \
+python scripts/check_amass_dimensions_s0.py \
     --pkl_file /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
     --motion_ids "0-5" \
     --max_motions 10
 
 # Check dimensions of all motions (first 10)
-python scripts/check_amass_dimensions.py \
+python scripts/check_amass_dimensions_s0.py \
     --pkl_file /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
     --max_motions 10
 
 # Check dimensions of single motion
-python scripts/check_amass_dimensions.py \
+python scripts/check_amass_dimensions_s0.py \
     --pkl_file /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
     --motion_ids "1"
 '''

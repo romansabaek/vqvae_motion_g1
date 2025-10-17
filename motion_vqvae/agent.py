@@ -120,18 +120,19 @@ class MVQVAEAgent:
         # Create motion data adapter
         self.motion_adapter = MotionDataAdapter(self.config)
         
-        # Load motion data in MVQ format
-        mocap_data, end_indices, frame_size = self.motion_adapter.load_motion_data(motion_file, motion_ids)
+        # Load motion data in MVQ format (fills adapter cache)
+        self.motion_adapter.load_motion_data(motion_file, motion_ids)
         
-        # Get motion data properties
-        self.frame_size = frame_size
+        # Reference-style accessors for parity
+        mocap_data = self.motion_adapter.get_mvq_data()
+        self.frame_size = self.motion_adapter.FRAME_SIZE
+        self.end_indices = self.motion_adapter.get_mvq_end_indices()
         
         # Update config with actual frame_size
-        self.config['frame_size'] = frame_size
+        self.config['frame_size'] = self.frame_size
         
         # Keep a copy for evaluation later
         self.mocap_data = mocap_data  # [F, frame_size]
-        self.end_indices = end_indices
 
         mean = mocap_data.mean(dim=0)
         std = mocap_data.std(dim=0)
@@ -184,69 +185,7 @@ class MVQVAEAgent:
 
         log.info(f"Setup complete. Model type: MotionVQVAE, Frame size: {self.frame_size}")
 
-    def setup(self, mocap_data, end_indices):
-        """Setup model and optimizers with provided data (legacy method)"""
-        
-        # Don't initialize wandb here - we'll do it after warmup to avoid step conflicts
-
-        # Get motion data properties
-        self.frame_size = mocap_data.shape[1]  # number of dims
-        
-        # Keep a copy for evaluation later
-        self.mocap_data = mocap_data  # [F, frame_size]
-        self.end_indices = end_indices
-
-        mean = mocap_data.mean(dim=0)
-        std = mocap_data.std(dim=0)
-        std[std == 0] = 1.0
-
-        # cache for reconstruction
-        self.mean = mean
-        self.std = std
-
-        dataset = MotionVQDataset(
-            mocap_data=mocap_data,
-            end_indices=self.end_indices,
-            window_size=self.config['window_size'],
-            mean=mean,
-            std=std
-        )
-
-        # Dataset size is too small, so we need to reduce the batch size
-        batch_size = min(self.config['batch_size'], len(dataset))
-
-        self.train_loader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=0,
-            pin_memory=False,
-            drop_last=True,
-            persistent_workers=False,
-        )
-        self.train_loader_iter = cycle(self.train_loader)
-        
-        # Initialize VQVAE model
-        self.model = MotionVQVAE(
-            self, # self as args
-            self.config['nb_code'],
-            self.config['code_dim'],
-            self.config['output_emb_width'],
-            self.config['down_t'],
-            self.config['stride_t'],
-            self.config['width'],
-            self.config['depth'],
-            self.config['dilation_growth_rate'],
-            self.config['vq_act'],
-            self.config['vq_norm']
-        ).to(self.device)
-        
-        # Setup optimizer
-        self.optimizer = optim.AdamW(self.model.parameters(), lr=self.config['lr'], betas=(0.9, 0.99), weight_decay=self.config['weight_decay'])
-        self.scheduler = optim.lr_scheduler.MultiStepLR(self.optimizer, milestones=self.config['lr_scheduler'], gamma=self.config['gamma'])
-
-        log.info(f"Setup complete. Model type: MotionVQVAE, Frame size: {self.frame_size}")
-
+    
     def load(self, checkpoint: Optional[Path]):
         """Load checkpoint."""
         if checkpoint is not None:
@@ -460,7 +399,19 @@ class MVQVAEAgent:
 
     @torch.no_grad()
     def evaluate_policy_rec(self, seq_idx: torch.Tensor) -> torch.Tensor:
-        """Reconstruct *ground-truth* motion sequence via the trained VQ-VAE."""
+        """Reconstruct *ground-truth* motion sequence via the trained VQ-VAE.
+
+        Parameters
+        ----------
+        ground_truth : int
+            Index of the motion sequence to reconstruct (0-based). This is the
+            same indexing used in ``self.end_indices``.
+
+        Returns
+        -------
+        recon : torch.Tensor
+            (T, frame_size) tensor containing the reconstructed motion (CPU).
+        """
 
         motion_id = int(seq_idx)
 

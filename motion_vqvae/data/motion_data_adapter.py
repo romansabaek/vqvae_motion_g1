@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Tuple, Optional, Dict, Any
 import logging
 import joblib
+from .torch_utils import quat_diff, quat_to_exp_map
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,9 @@ class MotionDataAdapter:
         self.mocap_data = None
         self.end_indices = None
         self.frame_size = None
+        self._loaded = False
     
-    def load_motion_data(self, motion_file: str, motion_ids: Optional[list] = None) -> Tuple[torch.Tensor, list, int]:
+    def load_motion_data(self, motion_file: str, motion_ids: Optional[list] = None) -> Tuple[torch.Tensor, np.ndarray, int]:
         """
         Load G1 humanoid motion data and convert to MVQ format.
         Extracts: root deltas (local frame), DOF positions, DOF velocities.
@@ -59,22 +61,29 @@ class MotionDataAdapter:
         
         # Load PKL file directly (simplified - only PKL support)
         motion_data_dict = joblib.load(motion_file)
-        motion_keys = list(motion_data_dict.keys())
+        motion_keys_all = list(motion_data_dict.keys())
         
+        # By default, use ALL motions in the file (match reference behavior)
         if motion_ids is None:
-            motion_ids = [0]  # Default to first motion
+            selected_keys = motion_keys_all
+        else:
+            if len(motion_ids) == 0:
+                selected_keys = []
+            elif isinstance(motion_ids[0], int):
+                valid_idx = [i for i in motion_ids if 0 <= i < len(motion_keys_all)]
+                if len(valid_idx) < len(motion_ids):
+                    logger.warning("Some motion indices are out of bounds and will be skipped.")
+                selected_keys = [motion_keys_all[i] for i in valid_idx]
+            else:
+                motion_ids_set = set(motion_ids)
+                selected_keys = [k for k in motion_keys_all if k in motion_ids_set]
         
         # Extract features for specified motions
         all_features = []
         end_indices = []
         current_end = 0
         
-        for motion_id in motion_ids:
-            if motion_id >= len(motion_keys):
-                logger.warning(f"Motion ID {motion_id} out of bounds. Skipping.")
-                continue
-                
-            motion_key = motion_keys[motion_id]
+        for motion_key in selected_keys:
             motion_data = motion_data_dict[motion_key]
             
             # Extract features for this motion
@@ -86,15 +95,41 @@ class MotionDataAdapter:
             end_indices.append(current_end - 1)
         
         # Concatenate all motion features
-        self.mocap_data = torch.cat(all_features, dim=0)
-        self.end_indices = end_indices
+        # Keep dataset tensors on CPU for efficient DataLoader pin/move; move to device later in training loop
+        self.mocap_data = torch.cat(all_features, dim=0).cpu()
+        # Return end indices as numpy array for consistency with reference
+        self.end_indices = np.array(end_indices, dtype=np.int64)
         self.frame_size = self.mocap_data.shape[1]
         
         logger.info(f"Loaded G1 humanoid motion data: {self.mocap_data.shape[0]} frames, {self.frame_size} features")
         logger.info(f"Frame size breakdown: root_deltas({self.ROOT_DELTAS_DIM}) + dof_positions({self.DOF_POSITIONS_DIM}) + dof_velocities({self.DOF_VELOCITIES_DIM}) = {self.TOTAL_FRAME_SIZE}")
         logger.info(f"Number of motion sequences: {len(self.end_indices)}")
         
+        self._loaded = True
         return self.mocap_data, self.end_indices, self.frame_size
+
+
+    @property
+    def FRAME_SIZE(self) -> int:
+        if self.frame_size is None:
+            return self.TOTAL_FRAME_SIZE
+        return int(self.frame_size)
+
+    def get_mvq_data(self) -> torch.Tensor:
+        """
+        Return cached MVQ data tensor [F, C]. Must call load_motion_data() first.
+        """
+        if not self._loaded or self.mocap_data is None:
+            raise RuntimeError("MotionDataAdapter: call load_motion_data() before get_mvq_data().")
+        return self.mocap_data
+
+    def get_mvq_end_indices(self) -> np.ndarray:
+        """
+        Return cached end indices as numpy array.
+        """
+        if not self._loaded or self.end_indices is None:
+            raise RuntimeError("MotionDataAdapter: call load_motion_data() before get_mvq_end_indices().")
+        return self.end_indices
     
     def _extract_g1_features(self, motion_data) -> torch.Tensor:
         """
@@ -103,57 +138,50 @@ class MotionDataAdapter:
         """
         # Extract G1 humanoid motion data
         root_pos = torch.tensor(motion_data["root_trans_offset"], dtype=torch.float32, device=self.device)
-        root_rot = torch.tensor(motion_data["root_rot"], dtype=torch.float32, device=self.device)
+        root_rot = torch.tensor(motion_data["root_rot"], dtype=torch.float32, device=self.device)  # XYZW format [x, y, z, w]
         dof_pos = torch.tensor(motion_data["dof"], dtype=torch.float32, device=self.device)
-        
-        motion_length = root_pos.shape[0]
+
+        num_frames = root_pos.shape[0]
         fps = motion_data.get("fps", self.FPS)
-        
+
         # Validate DOF dimensions
         if dof_pos.shape[1] != self.NUM_DOF:
             raise ValueError(f"Expected {self.NUM_DOF} DOF, got {dof_pos.shape[1]}")
-        
-        # MOTION_LIB-STYLE SMOOTHING: Compute velocities first, then smooth them
-        # 1. Compute root velocities (global frame)
+
+        # 1) Root linear velocity (global)
         root_vel = torch.zeros_like(root_pos)
         root_vel[:-1, :] = fps * (root_pos[1:, :] - root_pos[:-1, :])
         root_vel[-1, :] = root_vel[-2, :]
-        root_vel = self._smooth(root_vel, 19)  # Smooth like motion_lib
-        
-        # 2. Compute root angular velocities using quaternion differences
+        root_vel = self._smooth(root_vel, 19)
+
+        # 2) Root angular velocity (global, exp-map via quaternion difference)
         root_ang_vel = torch.zeros_like(root_pos)
-        root_drot = self._quat_diff(root_rot[:-1], root_rot[1:])
-        root_ang_vel[:-1, :] = fps * self._quat_to_exp_map(root_drot)
+        root_drot = quat_diff(root_rot[:-1], root_rot[1:])
+        root_ang_vel[:-1, :] = fps * quat_to_exp_map(root_drot)
         root_ang_vel[-1, :] = root_ang_vel[-2, :]
-        root_ang_vel = self._smooth(root_ang_vel, 19)  # Smooth like motion_lib
-        
-        # 3. Compute DOF velocities
+        root_ang_vel = self._smooth(root_ang_vel, 19)
+
+        # 3) DOF velocities
         dof_vel = torch.zeros_like(dof_pos)
         dof_vel[:-1, :] = fps * (dof_pos[1:, :] - dof_pos[:-1, :])
         dof_vel[-1, :] = dof_vel[-2, :]
-        dof_vel = self._smooth(dof_vel, 19)  # Smooth like motion_lib
-        
-        # 4. Convert global velocities to LOCAL frame (like deploy_mujoco_falcon_motionlib.py)
-        lin_vel_local = self._quat_rotate_inverse(root_rot, root_vel)
-        ang_vel_local = self._quat_rotate_inverse(root_rot, root_ang_vel)
-        
-        # Create MVQ frame tensor for G1 humanoid
-        # Format: [root_deltas(4), dof_positions(23), dof_velocities(23)] = 50 dimensions
-        mvq_frames = torch.zeros(motion_length, self.TOTAL_FRAME_SIZE, dtype=torch.float32, device=self.device)
-        
-        # Process frames for LOCAL features
-        for i in range(motion_length):
-            # 1. LOCAL root deltas (dx, dy, dz, dyaw in local frame)
-            # Use smoothed local velocities as deltas (divide by fps to get per-frame deltas)
-            mvq_frames[i, self.ROOT_DELTAS_START:self.ROOT_DELTAS_START+3] = lin_vel_local[i] / fps  # LOCAL position deltas (dx, dy, dz)
-            mvq_frames[i, self.ROOT_DELTAS_START+3] = ang_vel_local[i, 2] / fps  # Yaw delta (angular velocity around z-axis)
-            
-            # 2. DOF positions (use directly - no padding needed for G1)
-            mvq_frames[i, self.DOF_POSITIONS_START:self.DOF_POSITIONS_END] = dof_pos[i]
-            
-            # 3. DOF velocities (use smoothed velocities)
-            mvq_frames[i, self.DOF_VELOCITIES_START:self.DOF_VELOCITIES_END] = dof_vel[i]
-        
+        dof_vel = self._smooth(dof_vel, 19)
+
+        # 4) Convert velocities to LOCAL frame
+        lin_vel_local = self.quat_rotate_inverse(root_rot, root_vel)
+        ang_vel_local = self.quat_rotate_inverse(root_rot, root_ang_vel)
+
+        # Vectorized assembly of MVQ frames (no Python loop)
+        mvq_frames = torch.zeros(num_frames, self.TOTAL_FRAME_SIZE, dtype=torch.float32, device=self.device)
+
+        # Local root deltas per frame (use smoothed velocities divided by fps)
+        mvq_frames[:, self.ROOT_DELTAS_START:self.ROOT_DELTAS_START+3] = lin_vel_local / fps
+        mvq_frames[:, self.ROOT_DELTAS_START+3] = ang_vel_local[:, 2] / fps  # Δyaw approximation from local wz
+
+        # DOF positions and velocities
+        mvq_frames[:, self.DOF_POSITIONS_START:self.DOF_POSITIONS_END] = dof_pos
+        mvq_frames[:, self.DOF_VELOCITIES_START:self.DOF_VELOCITIES_END] = dof_vel
+
         return mvq_frames
     
     def _smooth(self, x, box_pts):
@@ -169,57 +197,15 @@ class MotionDataAdapter:
         )
         return smoothed.squeeze(0).T
     
-    def _quat_diff(self, q1, q2):
-        """Compute quaternion difference q1^{-1} * q2 (from motion_lib.py)."""
-        # q1^{-1} * q2 where q^{-1} = [w, -x, -y, -z] for unit quaternions
-        q1_inv = q1.clone()
-        q1_inv[:, 1:] *= -1  # Negate x, y, z components
-        
-        # Quaternion multiplication
-        w1, x1, y1, z1 = q1_inv[:, 0], q1_inv[:, 1], q1_inv[:, 2], q1_inv[:, 3]
-        w2, x2, y2, z2 = q2[:, 0], q2[:, 1], q2[:, 2], q2[:, 3]
-        
-        result = torch.zeros_like(q1)
-        result[:, 0] = w1*w2 - x1*x2 - y1*y2 - z1*z2  # w component
-        result[:, 1] = w1*x2 + x1*w2 + y1*z2 - z1*y2  # x component
-        result[:, 2] = w1*y2 - x1*z2 + y1*w2 + z1*x2  # y component
-        result[:, 3] = w1*z2 + x1*y2 - y1*x2 + z1*w2  # z component
-        
-        return result
     
-    def _quat_to_exp_map(self, q):
-        """Convert quaternion to exponential map (rotation vector) (from motion_lib.py)."""
-        # Extract rotation vector components
-        x, y, z = q[:, 1], q[:, 2], q[:, 3]  # x, y, z components
-        
-        # Compute rotation angle
-        sin_angle = torch.sqrt(x*x + y*y + z*z)
-        angle = 2 * torch.atan2(sin_angle, q[:, 0])
-        
-        # Avoid division by zero
-        mask = sin_angle > 1e-6
-        result = torch.zeros(q.shape[0], 3, device=self.device)
-        
-        result[mask, 0] = x[mask] * angle[mask] / sin_angle[mask]
-        result[mask, 1] = y[mask] * angle[mask] / sin_angle[mask]
-        result[mask, 2] = z[mask] * angle[mask] / sin_angle[mask]
-        
-        return result
-    
-    def _quat_rotate_inverse(self, q, v):
-        """Rotate vector by inverse of quaternion (from deploy_mujoco_falcon_motionlib.py)."""
-        # q^{-1} * v * q where q^{-1} = [w, -x, -y, -z] for unit quaternions
-        q_inv = q.clone()
-        q_inv[:, 1:] *= -1  # Negate x, y, z components
-        
-        # Extract components
-        q_w = q_inv[:, 0]
-        q_vec = q_inv[:, 1:4]
-        
-        # Apply rotation: v' = v * (2w^2 - 1) + 2w * (q_vec × v) + 2 * q_vec * (q_vec · v)
+    def quat_rotate_inverse(self, q, v):
+        shape = q.shape
+        q_w = q[:, -1]
+        q_vec = q[:, :3]
         a = v * (2.0 * q_w ** 2 - 1.0).unsqueeze(-1)
         b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
-        c = q_vec * torch.bmm(q_vec.view(q.shape[0], 1, 3), v.view(q.shape[0], 3, 1)).squeeze(-1) * 2.0
-        
+        c = q_vec * \
+            torch.bmm(q_vec.view(shape[0], 1, 3), v.view(
+                shape[0], 3, 1)).squeeze(-1) * 2.0
         return a - b + c
     

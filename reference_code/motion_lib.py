@@ -75,7 +75,7 @@ class MotionLib:
                     motion_data = {
                         "fps": motion_data_raw.get("fps", 30), # Default fps if not present
                         "root_pos": motion_data_raw["root_trans_offset"],   
-                        "root_rot": motion_data_raw["root_rot"],
+                        "root_rot": motion_data_raw["root_rot"], # x y z w
                         "dof_pos": motion_data_raw["dof"],
                         "smpl_joints": motion_data_raw.get("smpl_joints") 
                     }

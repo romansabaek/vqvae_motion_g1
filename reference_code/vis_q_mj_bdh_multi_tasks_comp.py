@@ -67,8 +67,8 @@ def main(cfg: DictConfig):
     global motion_id, time_step, dt, paused, motion_data_all, motion_lengths, motion_data_keys
 
     # pick motions by keys or indices
-    # data_pkl = "/home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl"
-    data_pkl = "/home/dhbaek/dh_workspace/vqvae_motion_g1/outputs/vqvae_motion_0.pkl"
+    data_pkl = "/home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl"
+    # data_pkl = "/home/dhbaek/dh_workspace/vqvae_motion_g1/outputs/vqvae_motion_0.pkl"
 
     motions = joblib.load(data_pkl)                  # dict: key -> motion dict
     all_keys = list(motions.keys())
