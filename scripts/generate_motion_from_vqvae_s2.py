@@ -169,7 +169,7 @@ python scripts/generate_motion_from_vqvae_s2.py \
 
 python scripts/generate_motion_from_vqvae_s2.py \
   --config configs/agent.yaml \
-  --checkpoint outputs/run_0_300_v2/best_model.ckpt \
+  --checkpoint outputs/run_0_300_v1/best_model.ckpt \
   --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
   --motion_ids "1" 
 

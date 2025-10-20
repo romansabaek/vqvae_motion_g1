@@ -5,7 +5,7 @@ agent:
   config:
     # data loader parameters
     batch_size: 256 # it should be bigger than the len(motion)
-    window_size: 64 # 32 16
+    window_size: 32 # 64 # 16
     num_workers: 4
 
     # optimization parameters
@@ -26,7 +26,7 @@ agent:
     code_dim: 256 # reduced from 512
     nb_code: 256 # reduced from 512 - smaller codebook forces better clustering
     mu: 0.99
-    down_t: 4 #2
+    down_t: 2
     stride_t: 2
     # Increased model capacity for better reconstruction
     width: 768 # increased from 512 for more representational power
