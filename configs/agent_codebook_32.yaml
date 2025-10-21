@@ -1,0 +1,59 @@
+# @package _global_
+
+agent:
+  _recursive_: False
+  config:
+    # data loader parameters
+    batch_size: 256 # it should be bigger than the len(motion)
+    window_size: 64 # 32 16
+    num_workers: 4
+
+    # optimization parameters
+    total_iter: 100000
+    warmup_iter: 1000
+    lr: 2e-4
+    lr_scheduler: [50000, 100000]
+    gamma: 0.05
+    weight_decay: 0.0
+    commit: 0.02
+    loss_vel: 0.5
+    recons_loss: 'l1_smooth'
+    
+    # model parameters # optimized for motion accuracy
+    num_joints: 24  # Default for SMPL
+  
+    # Reduced codebook size for better representation learning
+    code_dim: 256 # keep same embedding dimension
+    nb_code: 32 # reduced from 256 - minimal but expressive representation
+    mu: 0.99
+    down_t: 4 #2
+    stride_t: 2
+    # Increased model capacity for better reconstruction
+    width: 768 # increased from 512 for more representational power
+    depth: 4 # increased from 3 for deeper features
+    dilation_growth_rate: 2 # reduced from 3 for more stable training
+    output_emb_width: 256 # keep same to match code_dim
+    vq_act: 'gelu' # better than relu for motion data
+    vq_norm: 'layer' # add layer normalization for stability
+
+    # quantizer - improved settings
+    quantizer: 'ema_reset'
+    beta: 1.0
+    
+    # additional training improvements
+    gradient_clip: 1.0  # gradient clipping for stability
+    validation_freq: 500  # validate more frequently
+    early_stopping_patience: 10  # patience for early stopping
+    use_mixed_precision: false  # can enable for faster training if stable
+
+    
+    # Wandb parameters
+    use_wandb: true
+    wandb_project: "amass-vqvae-mvq"
+    wandb_run_name: ${wandb_run_name}
+    wandb_tags: [] 
+           
+    # Logging and saving
+    save_every: 1000
+    print_iter: 500
+    seed: 123

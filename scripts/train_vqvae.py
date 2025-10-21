@@ -56,7 +56,7 @@ def main():
 
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Train MotionVQVAE with config file')
-    parser.add_argument('--config', type=str, default='configs/agent.yaml', help='Path to YAML config file')
+    parser.add_argument('--config', type=str, default='configs/agent_codebook_64.yaml', help='Path to YAML config file')
     parser.add_argument('--motion_file', type=str, required=True, help='Path to motion file (PKL or NPY)')
     parser.add_argument('--motion_ids', type=str, default=None, help='Motion IDs to load (comma-separated, e.g., "0,1,2" or "0-10" for range)')
     parser.add_argument('--motion_id', type=int, default=None, help='Single motion ID to load (for backward compatibility)')
@@ -159,6 +159,6 @@ python scripts/train_vqvae.py \
   --motion_file /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
   --motion_ids "0-300" \
   --device auto \
-  --output_dir ./outputs/run_0_300_v2
+  --output_dir ./outputs/run_0_300_64
 
 '''
