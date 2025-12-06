@@ -7,8 +7,9 @@ from copy import deepcopy
 import mujoco
 import mujoco.viewer
 from scipy.spatial.transform import Rotation as R, Slerp
-import hydra
-from omegaconf import DictConfig
+import yaml
+import argparse
+from pathlib import Path
 
 import imageio
 from mujoco import Renderer
@@ -146,20 +147,80 @@ def load_vqvae_motion_direct(vqvae_file_path):
         return None
 
 
-@hydra.main(version_base=None, config_path="../../phc/data/cfg", config_name="config")
-def main(cfg: DictConfig):
+def load_robot_config(robot_config_name: str):
+    """
+    Load robot configuration from YAML file in assets directory.
+    
+    Args:
+        robot_config_name: Name of the robot config file (e.g., 'unitree_g1_kungfu_23dof_bdh')
+    
+    Returns:
+        dict: Robot configuration dictionary
+    """
+    # Get project root directory
+    project_root = Path(__file__).parent.parent
+    config_path = project_root / "assets" / f"{robot_config_name}.yaml"
+    
+    if not config_path.exists():
+        raise FileNotFoundError(f"Robot config file not found: {config_path}")
+    
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    return config
+
+
+def main():
     global motion_id, time_step, dt, paused, motion_data_all, motion_lengths, motion_data_keys
 
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Visualize VQVAE-generated motions in MuJoCo")
+    parser.add_argument(
+        "--robot",
+        type=str,
+        default="unitree_g1_kungfu_23dof_bdh",
+        help="Robot configuration name (without .yaml extension)"
+    )
+    parser.add_argument(
+        "--motion-files",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Paths to VQVAE motion PKL files (if not provided, uses default paths)"
+    )
+    parser.add_argument(
+        "--use-original",
+        action="store_true",
+        help="Use original motions instead of VQVAE motions"
+    )
+    
+    args = parser.parse_args()
+
+    # Load robot configuration
+    print(f"Loading robot configuration: {args.robot}")
+    robot_config = load_robot_config(args.robot)
+    
+    # Extract robot XML path from config
+    if 'asset' in robot_config and 'assetFileName' in robot_config['asset']:
+        humanoid_xml = robot_config['asset']['assetFileName']
+    else:
+        raise ValueError(f"Could not find asset.assetFileName in robot config: {robot_config.keys()}")
+
     # Configuration for motion loading
-    use_vqvae_motions = True  # Set to True to use VQVAE motions, False for original motions
+    use_vqvae_motions = not args.use_original
     
     if use_vqvae_motions:
         # VQVAE motion configuration - load directly from generated files
-        vqvae_motion_files = [
-            "/home/dhbaek/dh_workspace/vqvae_motion_g1/outputs/vqvae_motions/vqvae_motion_000.pkl",
-            "/home/dhbaek/dh_workspace/vqvae_motion_g1/outputs/vqvae_motions/vqvae_motion_001.pkl", 
-            "/home/dhbaek/dh_workspace/vqvae_motion_g1/outputs/vqvae_motions/vqvae_motion_002.pkl"
-        ]
+        if args.motion_files:
+            vqvae_motion_files = args.motion_files
+        else:
+            # Default motion files
+            project_root = Path(__file__).parent.parent
+            vqvae_motion_files = [
+                str(project_root / "outputs" / "vqvae_motions" / "vqvae_motion_000.pkl"),
+                str(project_root / "outputs" / "vqvae_motions" / "vqvae_motion_001.pkl"), 
+                str(project_root / "outputs" / "vqvae_motions" / "vqvae_motion_002.pkl")
+            ]
         
         print("=== Loading VQVAE-Generated Motions ===")
         motion_data_all = []
@@ -169,11 +230,11 @@ def main(cfg: DictConfig):
                 motion_data = load_vqvae_motion_direct(vqvae_file)
                 if motion_data is not None:
                     motion_data_all.append(motion_data)
-                    print(f"✅ Successfully loaded: {vqvae_file}")
+                    print(f" Successfully loaded: {vqvae_file}")
                 else:
-                    print(f"❌ Failed to load: {vqvae_file}")
+                    print(f" Failed to load: {vqvae_file}")
             else:
-                print(f"❌ File not found: {vqvae_file}")
+                print(f" File not found: {vqvae_file}")
         
         if not motion_data_all:
             print("No VQVAE motions loaded. Falling back to original motions.")
@@ -181,7 +242,11 @@ def main(cfg: DictConfig):
     
     if not use_vqvae_motions:
         # Original motion loading (fallback)
-        data_pkl = "/home/dhbaek/dh_workspace/vqvae_motion_g1/outputs/vqvae_motion_0.pkl"
+        project_root = Path(__file__).parent.parent
+        data_pkl = str(project_root / "outputs" / "vqvae_motion_0.pkl")
+        
+        if not os.path.exists(data_pkl):
+            raise FileNotFoundError(f"Original motion file not found: {data_pkl}")
         
         motions = joblib.load(data_pkl)
         all_keys = list(motions.keys())
@@ -212,7 +277,7 @@ def main(cfg: DictConfig):
         motion_data_keys = [f"original_motion_{i}" for i in range(len(motion_data_all))]
 
     # Load model
-    humanoid_xml = cfg.robot.asset.assetFileName
+    print(f"Loading MuJoCo model from: {humanoid_xml}")
     mj_model = mujoco.MjModel.from_xml_path(humanoid_xml)
     mj_model.opt.timestep = dt
     mj_data = mujoco.MjData(mj_model)
@@ -239,7 +304,7 @@ def main(cfg: DictConfig):
     # Video setup
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     motion_type = "vqvae" if use_vqvae_motions else "original"
-    video_path = f"/home/dhbaek/dh_workspace/data_deploy/deploy_pkl/each_motion_ref_video/{motion_data_keys[0]}_recorded_mujoco_{motion_type}.mp4"
+    video_path = f"/home/baekdh/dh_workspace/data_deploy/deploy_pkl/each_motion_ref_video/{motion_data_keys[0]}_recorded_mujoco_{motion_type}.mp4"
     os.makedirs("logs", exist_ok=True)
 
     renderer = Renderer(mj_model, width=640, height=480)
@@ -386,4 +451,5 @@ if __name__ == "__main__":
 
 
 # Usage examples:
-# python scripts/vis/vis_q_mj_bdh_multi_tasks_comp_vqvae.py robot=unitree_g1_kungfu_23dof_bdh
+# python reference_code/vis_q_mj_bdh_multi_tasks_comp_vqvae.py --robot unitree_g1_kungfu_23dof_bdh
+# python reference_code/vis_q_mj_bdh_multi_tasks_comp_vqvae.py --robot unitree_g1_kungfu_23dof_bdh --motion-files outputs/vqvae_motions/vqvae_motion_001.pkl outputs/vqvae_motions/vqvae_motion_002.pkl

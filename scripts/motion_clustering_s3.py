@@ -15,7 +15,7 @@ from pathlib import Path
 def extract_motion_block_features(df):
     """Extract features based on motion block content and patterns."""
     
-    print("🔧 Extracting motion block content features...")
+    print(" Extracting motion block content features...")
     
     # Get all unique block IDs
     all_blocks = set()
@@ -24,7 +24,7 @@ def extract_motion_block_features(df):
         all_blocks.update(sequence)
     
     max_block_id = max(all_blocks)
-    print(f"📊 Found {len(all_blocks)} unique blocks (max ID: {max_block_id})")
+    print(f" Found {len(all_blocks)} unique blocks (max ID: {max_block_id})")
     
     # Analyze which blocks are most commonly used across all motions
     global_block_counts = {}
@@ -37,7 +37,7 @@ def extract_motion_block_features(df):
     top_blocks = sorted(global_block_counts.items(), key=lambda x: x[1], reverse=True)[:50]
     top_block_ids = [block_id for block_id, _ in top_blocks]
     
-    print(f"🎯 Using top {len(top_block_ids)} most frequent blocks for clustering")
+    print(f" Using top {len(top_block_ids)} most frequent blocks for clustering")
     print(f"   Top blocks: {top_block_ids[:10]}...")
     
     # Create feature matrix focused on motion block content
@@ -83,7 +83,7 @@ def extract_motion_block_features(df):
         motion_features.append(motion_signature)
     
     motion_features = np.array(motion_features)
-    print(f"✅ Created motion block feature matrix: {motion_features.shape}")
+    print(f" Created motion block feature matrix: {motion_features.shape}")
     print(f"   - Block presence features: {len(top_block_ids)}")
     print(f"   - Block frequency features: {len(top_block_ids)}")
     print(f"   - Block combination features: {len(top_block_ids)}")
@@ -104,7 +104,7 @@ def extract_vqvae_features(df):
         all_blocks.update(sequence)
     
     max_block_id = max(all_blocks)
-    print(f"📊 Found {len(all_blocks)} unique blocks (max ID: {max_block_id})")
+    print(f" Found {len(all_blocks)} unique blocks (max ID: {max_block_id})")
     
     # Create feature matrix based on block frequencies and patterns
     vqvae_features = []
@@ -152,7 +152,7 @@ def extract_vqvae_features(df):
         vqvae_features.append(combined_features)
     
     vqvae_features = np.array(vqvae_features)
-    print(f"✅ Created VQVAE feature matrix: {vqvae_features.shape}")
+    print(f" Created VQVAE feature matrix: {vqvae_features.shape}")
     print(f"   - Block frequency features: {max_block_id + 1}")
     print(f"   - Transition features: 20")
     print(f"   - Pattern statistics: 4")
@@ -163,7 +163,7 @@ def extract_vqvae_features(df):
 def simple_clustering_analysis(csv_file: str, output_dir: str = "./outputs/simple_clustering", n_clusters: int = 5, feature_type: str = "motion_blocks"):
     """Simple clustering analysis with different feature types."""
     
-    print(f"🎯 Motion Block Clustering ({feature_type.upper()} Features)")
+    print(f" Motion Block Clustering ({feature_type.upper()} Features)")
     print(f"===============================================================================")
     print(f"Input CSV: {csv_file}")
     print(f"Output directory: {output_dir}")
@@ -177,7 +177,7 @@ def simple_clustering_analysis(csv_file: str, output_dir: str = "./outputs/simpl
     
     # Load motion data
     df = pd.read_csv(csv_file)
-    print(f"📊 Loaded {len(df)} motions")
+    print(f" Loaded {len(df)} motions")
     
     # Create feature matrix based on feature type
     if feature_type == "motion_blocks":
@@ -197,7 +197,7 @@ def simple_clustering_analysis(csv_file: str, output_dir: str = "./outputs/simpl
     features_scaled = scaler.fit_transform(features)
     
     # Perform K-means clustering
-    print(f"🎯 Performing K-means clustering with {n_clusters} clusters using {feature_description} features...")
+    print(f" Performing K-means clustering with {n_clusters} clusters using {feature_description} features...")
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     cluster_labels = kmeans.fit_predict(features_scaled)
     
@@ -205,7 +205,7 @@ def simple_clustering_analysis(csv_file: str, output_dir: str = "./outputs/simpl
     df['cluster'] = cluster_labels
     
     # Print cluster summary with motion block analysis
-    print(f"\n📊 Cluster Summary:")
+    print(f"\n Cluster Summary:")
     for cluster_id in range(n_clusters):
         cluster_data = df[df['cluster'] == cluster_id]
         print(f"Cluster {cluster_id}: {len(cluster_data)} motions")
@@ -229,7 +229,7 @@ def simple_clustering_analysis(csv_file: str, output_dir: str = "./outputs/simpl
         print()
     
     # Create single clustering plot
-    print("📊 Creating main clustering plot...")
+    print(" Creating main clustering plot...")
     
     # Use PCA to reduce features to 2D for visualization
     if feature_type in ["motion_blocks", "vqvae"]:
@@ -287,11 +287,11 @@ def simple_clustering_analysis(csv_file: str, output_dir: str = "./outputs/simpl
     # Save cluster assignments
     df.to_csv(output_path / "simple_clusters.csv", index=False)
     
-    print(f"✅ Motion clustering complete!")
-    print(f"📁 Results saved to: {output_path}")
-    print(f"📊 Created {n_clusters} clusters from {len(df)} motions")
-    print(f"📈 Main clustering plot saved to: {output_path / 'motion_clustering_plot.png'}")
-    print(f"📋 Cluster assignments saved to: {output_path / 'simple_clusters.csv'}")
+    print(f" Motion clustering complete!")
+    print(f" Results saved to: {output_path}")
+    print(f" Created {n_clusters} clusters from {len(df)} motions")
+    print(f" Main clustering plot saved to: {output_path / 'motion_clustering_plot.png'}")
+    print(f" Cluster assignments saved to: {output_path / 'simple_clusters.csv'}")
 
 
 def main():
@@ -310,7 +310,7 @@ def main():
     
     # Check if CSV file exists
     if not Path(args.csv_file).exists():
-        print(f"❌ CSV file not found: {args.csv_file}")
+        print(f" CSV file not found: {args.csv_file}")
         print("Run the motion block analysis first!")
         return
     

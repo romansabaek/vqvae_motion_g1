@@ -9,6 +9,7 @@ import torch
 import numpy as np
 import logging
 import argparse
+import json
 from pathlib import Path
 
 # Add the parent directory to the path so we can import motion_vqvae
@@ -29,9 +30,60 @@ def setup_device(device_str: str) -> torch.device:
         return torch.device(device_str)
 
 
-def parse_motion_ids(motion_ids_str: str, motion_id: int) -> list:
-    """Parse motion IDs from string or single ID."""
+def parse_motion_ids(motion_ids_str: str, motion_id: int, motion_ids_file: str = None) -> list:
+    """
+    Parse motion IDs from various formats:
+    - JSON list: "[0,1,2,5,10]"
+    - Comma-separated: "0,1,2,5,10"
+    - Range: "0-10" or "0-10,20,30-35"
+    - File path: path to file containing IDs (one per line or JSON list)
+    - Single ID: via motion_id parameter (backward compatibility)
+    
+    Examples:
+        --motion_ids "[0,1,2,5,10]"           # JSON list
+        --motion_ids "0,1,2,5,10"              # Comma-separated
+        --motion_ids "0-10"                    # Range
+        --motion_ids "0-10,20,30-35"           # Mixed
+        --motion_ids_file motion_ids.txt       # From file
+    """
+    # First check if a file is provided
+    if motion_ids_file is not None:
+        file_path = Path(motion_ids_file)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Motion IDs file not found: {motion_ids_file}")
+        
+        try:
+            # Try to parse as JSON first
+            with open(file_path, 'r') as f:
+                content = f.read().strip()
+                try:
+                    motion_ids = json.loads(content)
+                    if isinstance(motion_ids, list):
+                        return sorted(list(set(int(id) for id in motion_ids)))
+                except json.JSONDecodeError:
+                    # If not JSON, read as one ID per line
+                    motion_ids = []
+                    for line in content.split('\n'):
+                        line = line.strip()
+                        if line and not line.startswith('#'):  # Skip empty lines and comments
+                            motion_ids.append(int(line))
+                    return sorted(list(set(motion_ids)))
+        except Exception as e:
+            raise ValueError(f"Failed to parse motion IDs file {motion_ids_file}: {e}")
+    
+    # Parse from string
     if motion_ids_str is not None:
+        motion_ids_str = motion_ids_str.strip()
+        
+        # Try to parse as JSON list first
+        if motion_ids_str.startswith('[') and motion_ids_str.endswith(']'):
+            try:
+                motion_ids = json.loads(motion_ids_str)
+                if isinstance(motion_ids, list):
+                    return sorted(list(set(int(id) for id in motion_ids)))
+            except json.JSONDecodeError:
+                pass  # Fall through to comma-separated parsing
+        
         # Parse comma-separated IDs or ranges
         motion_ids = []
         for part in motion_ids_str.split(','):
@@ -44,6 +96,7 @@ def parse_motion_ids(motion_ids_str: str, motion_id: int) -> list:
                 # Handle single ID
                 motion_ids.append(int(part))
         return sorted(list(set(motion_ids)))  # Remove duplicates and sort
+    
     elif motion_id is not None:
         # Backward compatibility with single motion_id
         return [motion_id]
@@ -58,7 +111,13 @@ def main():
     parser = argparse.ArgumentParser(description='Train MotionVQVAE with config file')
     parser.add_argument('--config', type=str, default='configs/agent_codebook_64.yaml', help='Path to YAML config file')
     parser.add_argument('--motion_file', type=str, required=True, help='Path to motion file (PKL or NPY)')
-    parser.add_argument('--motion_ids', type=str, default=None, help='Motion IDs to load (comma-separated, e.g., "0,1,2" or "0-10" for range)')
+    parser.add_argument('--motion_ids', type=str, default=None, 
+                       help='Motion IDs to load. Supports multiple formats:\n'
+                            '  - JSON list: "[0,1,2,5,10]"\n'
+                            '  - Comma-separated: "0,1,2,5,10"\n'
+                            '  - Range: "0-10" or mixed "0-10,20,30-35"')
+    parser.add_argument('--motion_ids_file', type=str, default=None,
+                       help='Path to file containing motion IDs (one per line or JSON list)')
     parser.add_argument('--motion_id', type=int, default=None, help='Single motion ID to load (for backward compatibility)')
     parser.add_argument('--device', type=str, default='auto', help='Device to use (cuda/cpu/auto)')
     parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint to resume from')
@@ -69,13 +128,16 @@ def main():
     args = parser.parse_args()
     
     # Parse motion IDs
-    motion_ids = parse_motion_ids(args.motion_ids, args.motion_id)
+    motion_ids = parse_motion_ids(args.motion_ids, args.motion_id, args.motion_ids_file)
     
     log.info("Starting MotionVQVAE training with config file")
     log.info(f"Config file: {args.config}")
     log.info(f"Motion file: {args.motion_file}")
     if motion_ids is not None:
-        log.info(f"Motion IDs: {motion_ids}")
+        if args.motion_ids_file:
+            log.info(f"Motion IDs loaded from file '{args.motion_ids_file}': {motion_ids} (total: {len(motion_ids)})")
+        else:
+            log.info(f"Motion IDs: {motion_ids} (total: {len(motion_ids)})")
     else:
         log.info("Motion IDs: All motions")
     
@@ -154,11 +216,27 @@ if __name__ == "__main__":
 
 '''
 
+# Examples of different motion ID formats:
+
+# Range format (existing):
 python scripts/train_vqvae.py \
   --config configs/agent.yaml \
-  --motion_file /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
+  --motion_file /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
   --motion_ids "0-300" \
   --device auto \
   --output_dir ./outputs/run_0_300_64
+
+
+
+
+# JSON list format (new):
+python scripts/train_vqvae.py \
+  --config configs/agent.yaml \
+  --motion_file /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
+  --motion_ids "[0,1,2,5,10,20,50,100]" \
+  --device auto \
+  --output_dir ./outputs/run_specific_ids
+
+
 
 '''

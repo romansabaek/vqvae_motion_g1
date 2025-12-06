@@ -80,7 +80,7 @@ class MotionAccuracyEvaluator:
 
         # Initialize and load the trained model
         initialize_model(self.agent, self.config, self.agent.frame_size, checkpoint_path)
-        print("✅ Evaluator initialized successfully!")
+        print("Evaluator initialized successfully!")
 
     def _initialize_model(self):
         """Kept for backward compatibility; now handled by function utilities."""
@@ -92,10 +92,10 @@ class MotionAccuracyEvaluator:
         Returns a dict of metrics (including per-component root delta errors).
         """
         if not (0 <= motion_id < len(self.motion_keys)):
-            print(f"❌ Error: Motion ID {motion_id} is out of range (max: {len(self.motion_keys) - 1})")
+            print(f" Error: Motion ID {motion_id} is out of range (max: {len(self.motion_keys) - 1})")
             return None
 
-        print(f"\n▶️ Evaluating Motion ID: {motion_id} (Key: {self.motion_keys[motion_id]})")
+        print(f"\n▶ Evaluating Motion ID: {motion_id} (Key: {self.motion_keys[motion_id]})")
         print("=" * 60)
 
         # Load the ground-truth motion data for the specified ID
@@ -118,7 +118,7 @@ class MotionAccuracyEvaluator:
         # Compute accuracy metrics in the feature space
         metrics, per_frame_root_abs_err = self._calculate_metrics(gt_features, reconstructed_features)
 
-        print("📊 Accuracy Results (MVQ Feature Space):")
+        print(" Accuracy Results (MVQ Feature Space):")
         print(f"  - Root Deltas RMSE (dx, dy, dz, dyaw): {metrics['root_rmse_vec']}")
         print(f"  - Root Deltas MAE  (dx, dy, dz, dyaw): {metrics['root_mae_vec']}")
         print(f"  - DOF Position RMSE: {metrics['dof_pos_rmse']:.4f}")
@@ -134,7 +134,7 @@ class MotionAccuracyEvaluator:
             err_path = output_path / f"motion_{motion_id}_errors_root_deltas.npz"
             # per_frame_root_abs_err shape: [T, 4] -> save as is
             np.savez_compressed(err_path, abs_err=per_frame_root_abs_err)
-            print(f"🧾 Saved per-frame root delta errors to: {err_path}")
+            print(f" Saved per-frame root delta errors to: {err_path}")
 
             # Make plots
             self._plot_feature_trajectories(
@@ -222,7 +222,7 @@ class MotionAccuracyEvaluator:
         save_path = output_path / f"motion_{motion_id}_root_deltas.png"
         plt.savefig(save_path, dpi=150)
         plt.close(fig)
-        print(f"📈 Root delta plots saved to: {save_path}")
+        print(f" Root delta plots saved to: {save_path}")
 
         # Optional: small overlay plot of first 5 DOF pos/vel (kept concise)
         fig2, axes2 = plt.subplots(2, 1, figsize=(16, 8), sharex=True)
@@ -252,7 +252,7 @@ class MotionAccuracyEvaluator:
         save_path2 = output_path / f"motion_{motion_id}_dof_overlays.png"
         plt.savefig(save_path2, dpi=150)
         plt.close(fig2)
-        print(f"📈 DOF plots saved to: {save_path2}")
+        print(f" DOF plots saved to: {save_path2}")
 
 
 def main():
@@ -275,9 +275,9 @@ def main():
     metrics = evaluator.evaluate_motion(args.motion_id, args.output_dir)
 
     if metrics:
-        print("\n✅ Evaluation complete.")
+        print("\n Evaluation complete.")
     else:
-        print("\n❌ Evaluation failed.")
+        print("\n Evaluation failed.")
 
 
 if __name__ == "__main__":
@@ -289,14 +289,14 @@ if __name__ == "__main__":
 python scripts/eval_vqvae.py \
   --config configs/agent.yaml \
   --checkpoint outputs/run_0_300/best_model.ckpt \
-  --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
+  --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
   --motion_id 0 \
   --output_dir ./evaluation_plots
 
 python scripts/eval_vqvae.py \
   --config configs/agent.yaml \
-  --checkpoint outputs/run_0_300_v2/best_model.ckpt \
-  --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
+  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/outputs/run_0_300_64/best_model.ckpt \
+  --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
   --motion_id 0 \
   --output_dir ./evaluation_plots_v2
 

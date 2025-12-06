@@ -109,7 +109,7 @@ class AMASSFormatGenerator:
             codebook_data = self._extract_single_codebook_sequence(motion_id)
 
             if codebook_data is None:
-                print(f"  ❌ Failed to extract codebook sequence for motion {motion_id}")
+                print(f"   Failed to extract codebook sequence for motion {motion_id}")
                 continue
 
             # Save to CSV with all motion data at each step
@@ -178,7 +178,7 @@ class AMASSFormatGenerator:
             df = pd.DataFrame(data_dict)
             df.to_csv(out_path, index=False)
             generated_files.append(str(out_path))
-            print(f"  ✅ Saved: {original_key} -> {out_path}")
+            print(f"    Saved: {original_key} -> {out_path}")
             print(f"    Motion frames (30Hz): {sequence_length}")
             print(f"    Motion features: {reconstructed_motion.shape[1]}")
             print(f"    Codebook windows: {codebook_length}")
@@ -323,15 +323,17 @@ if __name__ == "__main__":
 # Example usage for generating AMASS format PKLs:
 python scripts/generate_motion_from_vqvae_s2.py \
   --config configs/agent.yaml \
-  --checkpoint outputs/run_0_300/best_model.ckpt \
-  --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
+  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/outputs/run_0_300_64/best_model.ckpt \
+  --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
   --motion_ids "1" 
+
+
 
 # Example usage for extracting codebook sequences with full motion data to CSV:
 python scripts/generate_motion_from_vqvae_s2.py \
   --config configs/agent.yaml \
-  --checkpoint outputs/run_0_300_v1/best_model.ckpt \
-  --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
+  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/outputs/run_0_300_64/best_model.ckpt \
+  --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
   --motion_ids "1" \
   --extract_codebook \
   --codebook_output_dir ./outputs/codebook_sequences

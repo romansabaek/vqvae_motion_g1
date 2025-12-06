@@ -1,3 +1,5 @@
+# @package robot
+
 humanoid_type: g1_kungfu
 bias_offset: False
 has_self_collision: True
@@ -50,8 +52,8 @@ left_foot_name: 'l_foot_roll'
 
 asset:
   assetRoot: "./"
-  assetFileName: "phc/data/assets/robot/unitree_g1/g1_kungfu.xml"
-  urdfFileName: "phc/data/assets/robot/unitree_g1/g1_kungfu.xml"
+  assetFileName: "/home/baekdh/dh_workspace/vqvae_motion_g1/assets/robot/unitree_g1/g1_kungfu.xml"
+  urdfFileName: "/home/baekdh/dh_workspace/vqvae_motion_g1/assets/robot/unitree_g1/g1_kungfu.xml"
 
 extend_config:
   - joint_name: "left_hand_link"

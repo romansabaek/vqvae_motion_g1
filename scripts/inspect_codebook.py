@@ -60,16 +60,16 @@ def inspect_codebook(config_path: str, checkpoint_path: str):
     agent.model.load_state_dict(checkpoint['model'])
     agent.model.eval()
     
-    print(f"✅ Model loaded successfully")
-    print(f"📊 Codebook size: {config['nb_code']}")
-    print(f"📊 Code dimension: {config['code_dim']}")
+    print(f" Model loaded successfully")
+    print(f" Codebook size: {config['nb_code']}")
+    print(f" Code dimension: {config['code_dim']}")
     
     # Access the codebook
     codebook = agent.model.vqvae.quantizer.codebook  # [nb_code, code_dim]
-    print(f"📊 Codebook shape: {codebook.shape}")
+    print(f" Codebook shape: {codebook.shape}")
     
     # Check similarity between different blocks
-    print(f"\n🔍 Codebook Similarity Analysis:")
+    print(f"\n Codebook Similarity Analysis:")
     
     # Check first 10 blocks
     block_ids_to_check = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -94,16 +94,16 @@ def inspect_codebook(config_path: str, checkpoint_path: str):
             print(f"    L2 distance: {l2_distance:.4f}")
             
             if similarity > 0.99:
-                print(f"    🚨 ALMOST IDENTICAL!")
+                print(f"     ALMOST IDENTICAL!")
             elif similarity > 0.9:
-                print(f"    ⚠️  Very similar")
+                print(f"      Very similar")
             elif similarity > 0.5:
-                print(f"    ✅ Moderately different")
+                print(f"     Moderately different")
             else:
-                print(f"    ✅ Very different")
+                print(f"     Very different")
     
     # Check codebook statistics
-    print(f"\n📈 Codebook Statistics:")
+    print(f"\n Codebook Statistics:")
     print(f"  Mean embedding norm: {torch.norm(codebook, dim=1).mean():.4f}")
     print(f"  Std embedding norm: {torch.norm(codebook, dim=1).std():.4f}")
     print(f"  Min embedding norm: {torch.norm(codebook, dim=1).min():.4f}")
@@ -121,12 +121,12 @@ def inspect_codebook(config_path: str, checkpoint_path: str):
                 identical_pairs.append((i, j, similarity))
     
     if identical_pairs:
-        print(f"  🚨 Found {len(identical_pairs)} almost identical pairs:")
+        print(f"   Found {len(identical_pairs)} almost identical pairs:")
         for block1, block2, sim in identical_pairs[:10]:  # Show first 10
             print(f"    Block {block1} vs Block {block2}: {sim:.6f}")
     else:
-        print(f"  ✅ No identical embeddings found in first 100 blocks")
-
+        print(f"   No identical embeddings found in first 100 blocks")
+        
 def main():
     parser = argparse.ArgumentParser(description='Inspect VQVAE codebook embeddings')
     parser.add_argument('--config', type=str, default='configs/agent.yaml', help='Path to config file')
