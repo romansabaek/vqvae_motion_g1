@@ -6,10 +6,22 @@ Shows 2x1 plot: codebook trajectory and motion changes.
 
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib
 import numpy as np
 import argparse
 import os
 from typing import List
+
+# Set Times New Roman font and increase default font sizes
+# Use font list with fallbacks for Linux compatibility
+# matplotlib.rcParams['font.family'] = ['Times New Roman', 'Times', 'serif', 'DejaVu Serif']
+matplotlib.rcParams['font.size'] = 14
+matplotlib.rcParams['axes.titlesize'] = 18
+matplotlib.rcParams['axes.labelsize'] = 16
+matplotlib.rcParams['xtick.labelsize'] = 14
+matplotlib.rcParams['ytick.labelsize'] = 14
+matplotlib.rcParams['legend.fontsize'] = 14
+matplotlib.rcParams['figure.titlesize'] = 20
 
 def plot_motion_trajectory(motion_ids: List[int], base_dir: str, save_path: str = None):
     """
@@ -74,7 +86,7 @@ def plot_motion_trajectory(motion_ids: List[int], base_dir: str, save_path: str 
             if i > 0:  # Don't draw line at the very beginning
                 axes[0].axvline(x=current_frame, color='red', linestyle='--', alpha=0.7)
                 axes[0].text(current_frame, axes[0].get_ylim()[1] * 0.95, f'Motion {motion_id}', 
-                            rotation=90, ha='right', va='top', fontsize=10, color='red')
+                            rotation=90, ha='right', va='top', fontsize=14, color='red')
             
             # Mark codebook changes for this motion
             if 'codebook_changed' in data.columns:
@@ -107,7 +119,8 @@ def plot_motion_trajectory(motion_ids: List[int], base_dir: str, save_path: str 
     
     stats_text = f'Unique Codebooks: {unique_codebooks}\nTotal Frames: {total_frames}\nRange: {min_codebook}-{max_codebook}'
     axes[1].text(0.02, 0.98, stats_text, transform=axes[1].transAxes, 
-                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                verticalalignment='top', fontsize=14,
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     
     axes[1].set_xlabel('Codebook Index')
     axes[1].set_ylabel('Frequency')
@@ -166,10 +179,10 @@ def main():
     parser = argparse.ArgumentParser(description='Plot connected motion trajectories for selected motion IDs')
     parser.add_argument('--motion-ids', nargs='+', type=int, required=True,
                        help='Motion IDs to analyze and connect (e.g., --motion-ids 0 1 255)')
-    parser.add_argument('--output', type=str, default='connected_motion_trajectory.png',
-                       help='Output file name (default: connected_motion_trajectory.png)')
+    parser.add_argument('--output', type=str, default='connected_motion_trajectory.pdf',
+                       help='Output file name (default: connected_motion_trajectory.pdf)')
     parser.add_argument('--base-dir', type=str, 
-                       default='/home/dhbaek/dh_workspace/vqvae_motion_g1/outputs/codebook_sequences',
+                       default='/home/baekdh/dh_workspace/vqvae_motion_g1/outputs/codebook_sequences',
                        help='Base directory containing CSV files')
     
     args = parser.parse_args()
@@ -186,6 +199,6 @@ if __name__ == "__main__":
 '''
 
 # Connect motion IDs 0, 1, and 255
-python scripts/plot_codebook_trajectory.py --motion-ids 0 1 255
+python scripts/plot_codebook_trajectory.py --motion-ids 145 47
 
 '''

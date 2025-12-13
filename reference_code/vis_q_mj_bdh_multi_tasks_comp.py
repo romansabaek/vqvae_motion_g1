@@ -7,20 +7,21 @@ from copy import deepcopy
 import mujoco
 import mujoco.viewer
 from scipy.spatial.transform import Rotation as R, Slerp
-import hydra
-from omegaconf import DictConfig
+import argparse
+from pathlib import Path
+import yaml
 
 import imageio
 from mujoco import Renderer
 from datetime import datetime
+
+import re
 
 # Add project root to path
 sys.path.append(os.getcwd())
 
 # Global state
 motion_id, time_step, dt, paused = 0, 0, 1 / 30, False
-# dt = 0.02 ############################
-
 motion_data_all = []
 motion_lengths = []
 motion_data_keys = []
@@ -62,40 +63,109 @@ def ensure_quaternion_continuity(quat_sequence):
 
 
 
-@hydra.main(version_base=None, config_path="../../phc/data/cfg", config_name="config")
-def main(cfg: DictConfig):
+
+
+
+
+
+def get_motions_by_index_list(motion_file: str, motion_indices: list):
+    """
+    Load motions directly by providing a list of motion indices (0-based).
+    
+    Args:
+        motion_file (str): Path to the motion pkl file
+        motion_indices (list): List of motion indices to load (0-based)
+        
+    Returns:
+        (motion_indices, motion_keys) - returns the same indices and corresponding motion keys
+    """
+    motion_dict = joblib.load(motion_file)
+    
+    # Get all available motion keys
+    available_keys = list(motion_dict.keys())
+    
+    motion_keys = []
+    valid_motion_indices = []
+    
+    print("--- Selecting Motions by Index List ---")
+    print(f"Total available motions: {len(available_keys)}")
+    
+    for motion_index in motion_indices:
+        if 0 <= motion_index < len(available_keys):
+            motion_keys.append(available_keys[motion_index])
+            valid_motion_indices.append(motion_index)
+            print(f"Found motion index {motion_index}: {available_keys[motion_index]}")
+        else:
+            print(f"Warning: Motion index {motion_index} out of range (0-{len(available_keys)-1})")
+    
+    return valid_motion_indices, motion_keys
+
+def load_robot_config(robot_config_name: str):
+    """Load robot configuration from assets YAML (matches VQVAE viewer)."""
+    project_root = Path(__file__).parent.parent
+    config_path = project_root / "assets" / f"{robot_config_name}.yaml"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Robot config file not found: {config_path}")
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
+
+
+def parse_motion_indices(indices_arg: str):
+    """Parse comma/space-separated indices string into list of ints."""
+    if not indices_arg:
+        return []
+    return [int(x) for x in re.split(r"[,\s]+", indices_arg) if x.strip() != ""]
+
+
+def main():
     global motion_id, time_step, dt, paused, motion_data_all, motion_lengths, motion_data_keys
 
-    # pick motions by keys or indices
-    data_pkl = "/home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl"
-    # data_pkl = "/home/dhbaek/dh_workspace/vqvae_motion_g1/outputs/vqvae_motion_0.pkl"
+    parser = argparse.ArgumentParser(description="Visualize AMASS motions in MuJoCo (no Hydra).")
+    parser.add_argument(
+        "--robot",
+        type=str,
+        default="unitree_g1_kungfu_23dof_bdh",
+        help="Robot configuration name (assets/{name}.yaml)",
+    )
+    parser.add_argument(
+        "--motion-file",
+        type=str,
+        default="/home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl",
+        help="Path to AMASS pkl file",
+    )
+    parser.add_argument(
+        "--motion-indices",
+        type=str,
+        default="8,286",
+        help="Comma/space separated motion indices to load (e.g., '8,286')",
+    )
+    args = parser.parse_args()
 
-    motions = joblib.load(data_pkl)                  # dict: key -> motion dict
-    all_keys = list(motions.keys())
+    motion_file = args.motion_file
+    motion_indices = parse_motion_indices(args.motion_indices)
+    if not motion_indices:
+        raise ValueError("No motion indices provided.")
+    print("Motion indices:", motion_indices)
+    
+    # Get motion keys directly from motion indices
+    motion_indices, motion_keys = get_motions_by_index_list(motion_file, motion_indices)
+    
+    # Load motions directly using motion keys
+    motion_dict = joblib.load(motion_file)
+    motion_data_all = [motion_dict[key] for key in motion_keys]
+    motion_data_keys = motion_keys
+    motion_lengths = [m['dof'].shape[0] for m in motion_data_all]
 
-    # choose what you want to play (by index or by name)
-    select_id = 0 #1 #38
+    print("Loaded motion keys:", motion_data_keys)
+    print("Lengths:", motion_lengths)
 
-    _selected_env = os.getenv("SELECTED_IDS", "").strip()
-    if _selected_env:
-        import re as _re
-        selected = [int(x) for x in _re.split(r"[,\s]+", _selected_env) if x]
-    else:
-        selected = [select_id]
-
-    if all(isinstance(x, int) for x in selected):
-        motion_names = [all_keys[i] for i in selected]
-    else:
-        motion_names = list(selected)
-
-    motion_data_all = [motions[k] for k in motion_names]
-    motion_lengths  = [m['dof'].shape[0] for m in motion_data_all]
-    motion_data_keys = motion_names[:]               # for logging/saving
-
-
+    # Load robot config (argparse/YAML like VQVAE viewer)
+    robot_config = load_robot_config(args.robot)
+    if "asset" not in robot_config or "assetFileName" not in robot_config["asset"]:
+        raise ValueError(f"Could not find asset.assetFileName in robot config: {robot_config.keys()}")
+    humanoid_xml = robot_config["asset"]["assetFileName"]
 
     # Load model
-    humanoid_xml = cfg.robot.asset.assetFileName
     mj_model = mujoco.MjModel.from_xml_path(humanoid_xml)
     mj_model.opt.timestep = dt
     mj_data = mujoco.MjData(mj_model)
@@ -119,10 +189,14 @@ def main(cfg: DictConfig):
     updated_global_offset = False
 
     saved_states = []
+    motion_name_str = "_".join(str(i) for i in motion_indices)
+    
+    # Global cumulative time that doesn't reset between motions
+    global_time = 0.0
 
     ##video
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    video_path = f"/home/dhbaek/dh_workspace/data_deploy/deploy_pkl/each_motion_ref_video/{selected[0]}_recorded_mujoco.mp4"
+    video_path = f"logs/{motion_name_str}_recorded_mujoco.mp4"
     os.makedirs("logs", exist_ok=True)
 
     renderer = Renderer(mj_model, width=640, height=480)
@@ -293,13 +367,13 @@ def main(cfg: DictConfig):
 
 
             #### save globally
-            transition_flag = 1.0 if transitioning else 0.0
+            motion_identifier = motion_id  # Integer ID to distinguish different motions (0, 1, 2, ...)
             state = np.concatenate([
-                [time_step],                    #  1
+                [global_time],                    #  1 - Global cumulative time (doesn't reset)
                 mj_data.qpos[:3],           # root position 3
                 mj_data.qpos[3:7],          # root rotation 4
                 mj_data.qpos[7:].copy(),    # DOF 23
-                [transition_flag]           # Transition flag (1.0 during transition, 0.0 otherwise) 1
+                [motion_identifier]         # Motion ID (0, 1, 2, ...) to distinguish different motions 1
             ])
             saved_states.append(state)
 
@@ -309,12 +383,13 @@ def main(cfg: DictConfig):
             viewer.sync()
             if not paused:
                 time_step += dt
+                global_time += dt  # Global time accumulates continuously
 
             if counter % frame_skip == 0:
                 root_pos = mj_data.qpos[:3].copy()  # Root world position
 
                 # Configure camera to look at root
-                viewer.cam.lookat[:] = mj_data.qpos.astype(np.float32)[:3] #root_pos
+                viewer.cam.lookat[:] =  mj_data.qpos.astype(np.float32)[:3] #root_pos
                 # viewer.cam.distance = 2.0  # Zoom level
                 # viewer.cam.azimuth = -20   # Horizontal angle
                 # viewer.cam.elevation = -20 # Vertical angle
@@ -333,14 +408,13 @@ def main(cfg: DictConfig):
 
 
     # Create filename based on motion sequence
-    motion_name_str = "_".join(motion_names)
-    save_name = f"saved_desired_states_{selected[0]}.npy"
+    save_name = f"saved_desired_states_{motion_name_str}.npy"
 
     # Save all states to a single file
-    # saved_states = np.array(saved_states)
-    # np.save(save_name, saved_states)
-    # np.save("/home/dhbaek/dh_workspace/data_deploy/deploy_pkl/each_motion_npy/" + save_name, saved_states)
-    # print(f"Saved {saved_states.shape[0]} frames to '{save_name}'")
+    saved_states = np.array(saved_states)
+    np.save(save_name, saved_states)
+    np.save("/home/baekdh/dh_workspace/data_deploy/deploy_pkl/motions/sequence_data/comparison/" + save_name, saved_states)
+    print(f"Saved {saved_states.shape[0]} frames to '{save_name}'")
 
     video_writer.close()
     print(f"Video saved to {video_path}")
@@ -351,4 +425,4 @@ if __name__ == "__main__":
 
 
 
-# python scripts/vis/vis_q_mj_bdh_multi_tasks_comp.py robot=unitree_g1_kungfu_23dof_bdh
+# python reference_code/vis_q_mj_bdh_multi_tasks_comp.py  --motion-indices 8,286

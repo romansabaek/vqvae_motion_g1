@@ -295,7 +295,7 @@ python scripts/eval_vqvae.py \
 
 python scripts/eval_vqvae.py \
   --config configs/agent.yaml \
-  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/outputs/run_0_300_64/best_model.ckpt \
+  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/outputs/run_0_300_32/best_model.ckpt \
   --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
   --motion_id 0 \
   --output_dir ./evaluation_plots_v2

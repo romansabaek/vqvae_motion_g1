@@ -6,7 +6,7 @@ import numpy as np
 from copy import deepcopy
 import mujoco
 import mujoco.viewer
-from scipy.spatial.transform import Rotation as R, Slerp
+from scipy.spatial.transform import Rotation as R
 import yaml
 import argparse
 from pathlib import Path
@@ -36,15 +36,6 @@ def key_callback(keycode):
         time_step = 0
         motion_id = 0
         print("Reset motion sequence")
-
-
-def blend_quat_mujoco(q1_wxyz, q2_wxyz, alpha):
-    q1_xyzw = [q1_wxyz[1], q1_wxyz[2], q1_wxyz[3], q1_wxyz[0]]
-    q2_xyzw = [q2_wxyz[1], q2_wxyz[2], q2_wxyz[3], q2_wxyz[0]]
-    slerp = Slerp([0, 1], R.from_quat([q1_xyzw, q2_xyzw]))
-    r_interp = slerp([alpha])[0]
-    q_interp = r_interp.as_quat()
-    return np.array([q_interp[3], q_interp[0], q_interp[1], q_interp[2]])  # back to wxyz
 
 
 def extract_euler_xyz_from_wxyz(q_wxyz):
@@ -281,22 +272,7 @@ def main():
     mj_model.opt.timestep = dt
     mj_data = mujoco.MjData(mj_model)
 
-    # Transition-related state
-    transitioning = False
-    transition_cnt = 0
-    transition_frames = int(1 / dt)
-
-    print("dt:", dt) 
-    print("transition_frames:", transition_frames)
-
-    root_pos_fixed = None
-    root_rot_fixed = None
-    dof_start = None
-
-    next_root_pos = None
-    next_root_rot = None
-    next_dof = None
-    updated_global_offset = False
+    print("dt:", dt)
 
     saved_states = []
 
@@ -353,63 +329,24 @@ def main():
                 mj_data.qpos[:3] = global_pos
                 mj_data.qpos[3:7] = global_rot[[3, 0, 1, 2]]  # Convert wxyz to xyzw for Mujoco
                 mj_data.qpos[7:] = curr_motion['dof'][curr_index]
-
-            elif curr_index < motion_len + transition_frames:
+            else:
                 # === End after last motion ===
                 if motion_id == len(motion_data_all) - 1:
                     print("All motions finished.")
                     break  # Exit the viewer loop
 
-                # === Smooth transition ===
-                if not transitioning:
-                    transitioning = True
-                    transition_cnt = 0
-                    prev_motion = curr_motion
-                    next_motion = motion_data_all[(motion_id + 1) % len(motion_data_all)]
-
-                    # Save transition start/end
-                    pos_start = prev_motion['root_trans_offset'][-1]
-                    rot_start = prev_motion['root_rot'][-1]
-                    dof_start = prev_motion['dof'][-1]
-
-                    pos_end = next_motion['root_trans_offset'][0]
-                    rot_end = next_motion['root_rot'][0]
-                    dof_end = next_motion['dof'][0]
-
-                alpha = (curr_index - motion_len) / transition_frames
-                alpha = np.clip(alpha, 0.0, 1.0)
-
-                # Interpolate position
-                pos_interp = (1 - alpha) * pos_start + alpha * pos_end
-
-                # Interpolate orientation
-                rot_interp = blend_quat_mujoco(rot_start, rot_end, alpha)
-
-                # Interpolate joints
-                dof_interp = (1 - alpha) * dof_start + alpha * dof_end
-
-                mj_data.qpos[:3] = pos_interp
-                mj_data.qpos[3:7] = rot_interp[[3, 0, 1, 2]]  # Convert wxyz to xyzw for Mujoco
-                mj_data.qpos[7:] = dof_interp
-
-                transition_cnt += 1
-
-            else:
-                # === Switch to next motion ===
-                transitioning = False
+                # === Switch to next motion (no transition, motions are already aligned) ===
                 motion_id = (motion_id + 1) % len(motion_data_all)
                 time_step = 0
-                print("motion_id", motion_id)
+                print(f"Switching to motion_id {motion_id}")
                 continue
 
             # Save state globally
-            transition_flag = 1.0 if transitioning else 0.0
             state = np.concatenate([
                 [time_step],                    #  1
                 mj_data.qpos[:3],           # root position 3
                 mj_data.qpos[3:7],          # root rotation 4
                 mj_data.qpos[7:].copy(),    # DOF 23
-                [transition_flag]           # Transition flag (1.0 during transition, 0.0 otherwise) 1
             ])
             saved_states.append(state)
 
@@ -419,6 +356,7 @@ def main():
             if not paused:
                 time_step += dt
 
+            counter += 1
             if counter % frame_skip == 0:
                 root_pos = mj_data.qpos[:3].copy()  # Root world position
 
@@ -450,5 +388,5 @@ if __name__ == "__main__":
 
 
 # Usage examples:
-# python reference_code/vis_q_mj_bdh_multi_tasks_comp_vqvae.py --robot unitree_g1_kungfu_23dof_bdh
-# python reference_code/vis_q_mj_bdh_multi_tasks_comp_vqvae.py --robot unitree_g1_kungfu_23dof_bdh --motion-files outputs/vqvae_motions/vqvae_motion_001.pkl outputs/vqvae_motions/vqvae_motion_002.pkl
+# python reference_code/vis_q_mj_bdh_multi_tasks_comp_vqvae_no_trainsition.py --robot unitree_g1_kungfu_23dof_bdh
+# python reference_code/vis_q_mj_bdh_multi_tasks_comp_vqvae_no_trainsition.py --robot unitree_g1_kungfu_23dof_bdh --motion-files outputs/vqvae_motions/vqvae_motion_001.pkl outputs/vqvae_motions/vqvae_motion_002.pkl
