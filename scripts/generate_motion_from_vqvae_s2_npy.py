@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-#!/usr/bin/env python3
 """
 Generate PKL files in AMASS-like format (XYZW quaternion) from a trained Motion-VQVAE.
+Uses NPY motion files (not AMASS PKL format).
 Global/world export only: integrates local root deltas to world (AMASS-like globals).
 """
 
@@ -20,7 +20,6 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from scripts.vqvae_gen_init import (
     load_config_and_agent,
-    load_original_pkl,
     infer_frame_size,
     initialize_model,
     ensure_stats,
@@ -32,11 +31,61 @@ from scripts.vqvae_gen_init import (
 )
 
 
-class AMASSFormatGenerator:
-    """Generate PKL files in AMASS-like global format from a trained VQVAE model."""
+def load_original_npy(input_npy_file: str) -> Tuple[Dict, List[str]]:
+    """
+    Load npy file and convert to AMASS-like format.
+    Format: [time, root_pos(3), root_rot(4), dof_pos(23), motion_id] = 32 cols
+    Root rotation is in WXYZ format, converted to XYZW for AMASS compatibility.
+    
+    Note: npy files typically contain a single motion, so we use "motion_0" as the key
+    to match the list index (motion_id=0) used elsewhere in the code.
+    """
+    trajectory_data = np.load(input_npy_file)
+    
+    # Format: [time, root_pos(3), root_rot(4), dof_pos(23), motion_id] = 32 cols
+    # Root rotation is WXYZ, need to convert to XYZW
+    num_frames = trajectory_data.shape[0]
+    
+    # Extract data
+    time_stamps = trajectory_data[:, 0]
+    root_pos = trajectory_data[:, 1:4]  # [T, 3]
+    root_rot_wxyz = trajectory_data[:, 4:8]  # [T, 4] in WXYZ format
+    dof_pos = trajectory_data[:, 8:31]  # [T, 23]
+    # Note: We ignore the motion_id in the file and use index 0 for consistency
+    
+    # Convert root rotation from WXYZ to XYZW
+    root_rot_xyzw = root_rot_wxyz[:, [1, 2, 3, 0]]  # [x, y, z, w] = [1, 2, 3, 0]
+    
+    # Calculate fps from time stamps
+    if len(time_stamps) > 1:
+        dt = np.mean(np.diff(time_stamps))
+        fps = 1.0 / dt if dt > 0 else 30.0
+    else:
+        fps = 30.0
+    
+    # Create AMASS-like motion dict
+    # Use "motion_0" as key to match the list index (motion_id=0) used in the code
+    motion_key = "motion_0"
+    motion_data = {
+        "root_trans_offset": root_pos.astype(np.float32),
+        "root_rot": root_rot_xyzw.astype(np.float32),  # XYZW format
+        "dof": dof_pos.astype(np.float32),
+        "fps": fps,
+        "pose_aa": np.zeros((num_frames, 72), dtype=np.float32),  # Placeholder for compatibility
+        "smpl_joints": np.zeros((num_frames, 24, 3), dtype=np.float32),  # Placeholder for compatibility
+    }
+    
+    motions = {motion_key: motion_data}
+    keys = [motion_key]
+    
+    return motions, keys
 
-    def __init__(self, config_path: str, checkpoint_path: str, input_pkl_file: str, eval_stride: int = None):
-        self.input_pkl_file = input_pkl_file
+
+class AMASSFormatGenerator:
+    """Generate PKL files in AMASS-like global format from a trained VQVAE model using NPY motion files."""
+
+    def __init__(self, config_path: str, checkpoint_path: str, input_npy_file: str, eval_stride: int = None):
+        self.input_npy_file = input_npy_file
 
         # Shared init
         self.config, self.agent, self.motion_adapter = load_config_and_agent(config_path, checkpoint_path)
@@ -46,19 +95,18 @@ class AMASSFormatGenerator:
             self.config["eval_stride"] = int(eval_stride)
             self.agent.config["eval_stride"] = int(eval_stride)
 
-        # Load original AMASS data
-        print(f"Loading original AMASS data from: {input_pkl_file}")
-        self.original_motions, self.original_keys = load_original_pkl(input_pkl_file)
-        print(f"Loaded {len(self.original_keys)} original motions")
+        # Load original motion data from npy file
+        print(f"Loading original motion data from npy file: {input_npy_file}")
+        self.original_motions, self.original_keys = load_original_npy(input_npy_file)
+        print(f"Loaded {len(self.original_keys)} original motions from npy file")
 
-        # Load multiple motions for proper normalization statistics (same as eval_vqvae.py)
-        max_motions_for_stats = min(300, len(self.original_keys))
-        subset_motion_ids = list(range(max_motions_for_stats))
-        print(f"Loading first {max_motions_for_stats} motions for normalization stats...")
+        # Load motion data for normalization statistics
+        # For npy files, typically only one motion, so we use motion_id 0
+        subset_motion_ids = [0] if len(self.original_keys) > 0 else []
+        print(f"Loading motion data for normalization stats...")
         
-        mocap_data, end_indices, frame_size = self.motion_adapter.load_motion_data(
-            input_pkl_file, subset_motion_ids
-        )
+        # Load the npy data and convert it to AMASS-like format for the adapter
+        mocap_data, end_indices, frame_size = self._load_npy_motion_data(input_npy_file, subset_motion_ids)
         
         print(f"Loaded data for stats: shape={mocap_data.shape}, frame_size={frame_size}")
         print(f"Using device: {self.agent.device}")
@@ -216,12 +264,56 @@ class AMASSFormatGenerator:
 
     # ---- internal helpers ----
 
+    def _load_npy_motion_data(self, npy_file: str, motion_ids: List[int]) -> Tuple[torch.Tensor, np.ndarray, int]:
+        """
+        Load npy file and convert to MVQ format for the motion adapter.
+        This converts npy data to the format expected by the VQVAE model.
+        """
+        # Load npy file
+        trajectory_data = np.load(npy_file)
+        
+        # Format: [time, root_pos(3), root_rot(4), dof_pos(23), motion_id] = 32 cols
+        num_frames = trajectory_data.shape[0]
+        
+        # Extract data
+        time_stamps = trajectory_data[:, 0]
+        root_pos = trajectory_data[:, 1:4]  # [T, 3]
+        root_rot_wxyz = trajectory_data[:, 4:8]  # [T, 4] in WXYZ format
+        dof_pos = trajectory_data[:, 8:31]  # [T, 23]
+        
+        # Convert root rotation from WXYZ to XYZW
+        root_rot_xyzw = root_rot_wxyz[:, [1, 2, 3, 0]]  # [x, y, z, w] = [1, 2, 3, 0]
+        
+        # Calculate fps from time stamps
+        if len(time_stamps) > 1:
+            dt = np.mean(np.diff(time_stamps))
+            fps = 1.0 / dt if dt > 0 else 30.0
+        else:
+            fps = 30.0
+        
+        # Convert to AMASS-like format for the adapter
+        motion_data = {
+            "root_trans_offset": root_pos.astype(np.float32),
+            "root_rot": root_rot_xyzw.astype(np.float32),  # XYZW format
+            "dof": dof_pos.astype(np.float32),
+            "fps": fps,
+        }
+        
+        # Use the adapter's feature extraction method
+        motion_features = self.motion_adapter._extract_g1_features(motion_data)
+        
+        # Return as if it's a single motion
+        end_indices = np.array([num_frames - 1], dtype=np.int64)
+        frame_size = motion_features.shape[1]
+        
+        return motion_features, end_indices, frame_size
+
     def _generate_single_motion(self, motion_id: int) -> Optional[Dict]:
         """Reconstruct a single motion and convert to AMASS-like global output."""
         try:
             # Load MVQ data for this motion only
-            mocap_data, end_indices, frame_size = self.motion_adapter.load_motion_data(
-                self.input_pkl_file, [motion_id]
+            mocap_data, end_indices, frame_size = self._load_npy_motion_data(
+                self.input_npy_file, [motion_id]
             )
             # Move to model device
             if isinstance(mocap_data, torch.Tensor):
@@ -256,8 +348,8 @@ class AMASSFormatGenerator:
         """Extract codebook sequence and motion data for a single motion."""
         try:
             # Load MVQ data for this motion only
-            mocap_data, end_indices, frame_size = self.motion_adapter.load_motion_data(
-                self.input_pkl_file, [motion_id]
+            mocap_data, end_indices, frame_size = self._load_npy_motion_data(
+                self.input_npy_file, [motion_id]
             )
             # Move to model device
             if isinstance(mocap_data, torch.Tensor):
@@ -296,11 +388,11 @@ class AMASSFormatGenerator:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate AMASS-like PKLs from trained VQVAE")
+    parser = argparse.ArgumentParser(description="Generate AMASS-like PKLs from trained VQVAE using NPY motion files")
     parser.add_argument("--config", type=str, default="configs/agent.yaml", help="Path to config file")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint (.ckpt/.pt)")
-    parser.add_argument("--input_pkl", type=str, required=True, help="Path to input AMASS PKL (dict)")
-    parser.add_argument("--motion_ids", type=str, default="0", help='Comma/range list, e.g. "0,2,5-12"')
+    parser.add_argument("--input_npy", type=str, required=True, help="Path to input NPY file")
+    parser.add_argument("--motion_ids", type=str, default="0", help='Comma/range list, e.g. "0,2,5-12" (typically "0" for single motion npy files)')
     parser.add_argument("--output_dir", type=str, default=None, help="Directory to save PKLs")
     # global-only export; no --space option
     parser.add_argument("--eval_stride", type=int, default=None, help="Stride for overlapped reconstruction (default: window_size//2)")
@@ -315,7 +407,7 @@ def main():
     generator = AMASSFormatGenerator(
         config_path=args.config,
         checkpoint_path=args.checkpoint,
-        input_pkl_file=args.input_pkl,
+        input_npy_file=args.input_npy,
         eval_stride=args.eval_stride,
     )
 
@@ -350,14 +442,13 @@ if __name__ == "__main__":
 
 
 
-# Example usage for extracting codebook sequences with full motion data to CSV:
-python scripts/generate_motion_from_vqvae_s2.py \
+# Example usage with NPY file (single motion):
+python scripts/generate_motion_from_vqvae_s2_npy.py \
   --config configs/agent.yaml \
   --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/outputs/run_0_300_32/best_model.ckpt \
-  --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
-  --motion_ids "0-300" \
+  --input_npy /home/baekdh/dh_workspace/data_deploy/deploy_pkl/each_motion_npy/saved_desired_states_0.npy \
+  --motion_ids "0" \
   --extract_codebook \
-  --codebook_output_dir ./outputs/codebook_sequences
-
+  --codebook_output_dir ./outputs/codebook_sequences_npy
 
 '''

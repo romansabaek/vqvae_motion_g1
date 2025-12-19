@@ -55,11 +55,22 @@ class MotionDataAdapter:
     def load_motion_data(self, motion_file: str, motion_ids: Optional[list] = None) -> Tuple[torch.Tensor, np.ndarray, int]:
         """
         Load G1 humanoid motion data and convert to MVQ format.
+        Supports both PKL (AMASS) and NPY file formats.
         Extracts: root deltas (local frame), DOF positions, DOF velocities.
         """
         logger.info(f"Loading motion data from: {motion_file}")
         
-        # Load PKL file directly (simplified - only PKL support)
+        motion_file_path = Path(motion_file)
+        
+        # Check file extension to determine format
+        if motion_file_path.suffix.lower() == '.npy':
+            return self._load_npy_data(motion_file, motion_ids)
+        else:
+            return self._load_pkl_data(motion_file, motion_ids)
+    
+    def _load_pkl_data(self, motion_file: str, motion_ids: Optional[list] = None) -> Tuple[torch.Tensor, np.ndarray, int]:
+        """Load motion data from PKL file (AMASS format)."""
+        # Load PKL file
         motion_data_dict = joblib.load(motion_file)
         motion_keys_all = list(motion_data_dict.keys())
         
@@ -107,6 +118,152 @@ class MotionDataAdapter:
         
         self._loaded = True
         return self.mocap_data, self.end_indices, self.frame_size
+    
+    def _load_npy_data(self, motion_file: str, motion_ids: Optional[list] = None) -> Tuple[torch.Tensor, np.ndarray, int]:
+        """Load motion data from NPY file format."""
+        # Load the continuous trajectory data from the .npy file
+        trajectory_data = np.load(motion_file)
+        logger.info(f"Loaded NPY file with shape: {trajectory_data.shape}")
+        
+        # NPY format: [time, root_pos(3), root_rot(4), dof_pos(23), motion_id/transition_flag]
+        # The last column is used to split motions
+        num_cols = trajectory_data.shape[1]
+        
+        # Determine if last column is motion_id or transition_flag
+        # If values are integers and change infrequently, it's likely motion_id
+        last_col = trajectory_data[:, -1]
+        unique_values = np.unique(last_col)
+        
+        # Split trajectory into motion clips based on motion_id changes
+        if len(trajectory_data) > 1:
+            # Find indices where motion_id changes
+            changes = np.where(last_col[:-1] != last_col[1:])[0] + 1
+            split_indices = [0] + changes.tolist() + [len(trajectory_data)]
+        else:
+            split_indices = [0, len(trajectory_data)]
+        
+        # Create motion clips
+        motion_clips = []
+        for i in range(len(split_indices) - 1):
+            start_idx = split_indices[i]
+            end_idx = split_indices[i + 1]
+            clip_data = trajectory_data[start_idx:end_idx]
+            motion_clips.append(clip_data)
+        
+        logger.info(f"Detected {len(motion_clips)} motion clip(s) in NPY file")
+        
+        # Select which clips to process based on motion_ids
+        if motion_ids is None:
+            selected_clips = motion_clips
+        else:
+            if len(motion_ids) == 0:
+                selected_clips = []
+            else:
+                # motion_ids are indices into the clips
+                valid_idx = [i for i in motion_ids if 0 <= i < len(motion_clips)]
+                if len(valid_idx) < len(motion_ids):
+                    logger.warning(f"Some motion indices are out of bounds. Valid range: 0-{len(motion_clips)-1}")
+                selected_clips = [motion_clips[i] for i in valid_idx]
+        
+        # Extract features for each selected clip
+        all_features = []
+        end_indices = []
+        current_end = 0
+        
+        for clip_data in selected_clips:
+            # Extract features from this clip
+            motion_features = self._extract_g1_features_from_npy(clip_data)
+            all_features.append(motion_features)
+            
+            # Update end index
+            current_end += motion_features.shape[0]
+            end_indices.append(current_end - 1)
+        
+        # Concatenate all motion features
+        if len(all_features) == 0:
+            raise ValueError("No valid motion clips found after filtering")
+        
+        self.mocap_data = torch.cat(all_features, dim=0).cpu()
+        self.end_indices = np.array(end_indices, dtype=np.int64)
+        self.frame_size = self.mocap_data.shape[1]
+        
+        logger.info(f"Loaded G1 humanoid motion data from NPY: {self.mocap_data.shape[0]} frames, {self.frame_size} features")
+        logger.info(f"Frame size breakdown: root_deltas({self.ROOT_DELTAS_DIM}) + dof_positions({self.DOF_POSITIONS_DIM}) + dof_velocities({self.DOF_VELOCITIES_DIM}) = {self.TOTAL_FRAME_SIZE}")
+        logger.info(f"Number of motion sequences: {len(self.end_indices)}")
+        
+        self._loaded = True
+        return self.mocap_data, self.end_indices, self.frame_size
+    
+    def _extract_g1_features_from_npy(self, clip_data: np.ndarray) -> torch.Tensor:
+        """
+        Extract G1 humanoid features from NPY format data.
+        NPY format: [time, root_pos(3), root_rot(4), dof_pos(23), motion_id/transition_flag]
+        Root rotation is in WXYZ format, needs conversion to XYZW.
+        """
+        num_frames = clip_data.shape[0]
+        num_cols = clip_data.shape[1]
+        
+        # Extract time stamps
+        time_stamps = clip_data[:, 0]
+        dt = np.mean(np.diff(time_stamps)) if len(time_stamps) > 1 else 1.0 / self.FPS
+        fps = 1.0 / dt
+        
+        # Extract root position (columns 1:4)
+        root_pos = torch.tensor(clip_data[:, 1:4], dtype=torch.float32, device=self.device)
+        
+        # Extract root rotation (columns 4:8) - WXYZ format
+        root_rot_wxyz = torch.tensor(clip_data[:, 4:8], dtype=torch.float32, device=self.device)
+        # Convert WXYZ to XYZW format
+        root_rot = root_rot_wxyz[:, [1, 2, 3, 0]]
+        
+        # Extract DOF positions
+        # Handle both formats: with/without token column
+        if num_cols == 33:
+            # Has token column: [time, root_pos(3), root_rot(4), dof_pos(23), token(1), motion_id(1)]
+            dof_pos = torch.tensor(clip_data[:, 8:31], dtype=torch.float32, device=self.device)
+        else:
+            # No token column: [time, root_pos(3), root_rot(4), dof_pos(23), motion_id(1)]
+            dof_pos = torch.tensor(clip_data[:, 8:-1], dtype=torch.float32, device=self.device)
+        
+        # Validate DOF dimensions
+        if dof_pos.shape[1] != self.NUM_DOF:
+            raise ValueError(f"Expected {self.NUM_DOF} DOF, got {dof_pos.shape[1]}")
+        
+        # 1) Root linear velocity (global) - improved smoothing
+        root_vel = torch.zeros_like(root_pos)
+        root_vel[:-1, :] = fps * (root_pos[1:, :] - root_pos[:-1, :])
+        root_vel[-1, :] = root_vel[-2, :]
+        root_vel = self._smooth(root_vel, 19)
+        
+        # 2) Root angular velocity (global, exp-map via quaternion difference)
+        root_ang_vel = torch.zeros_like(root_pos)
+        root_drot = quat_diff(root_rot[:-1], root_rot[1:])
+        root_ang_vel[:-1, :] = fps * quat_to_exp_map(root_drot)
+        root_ang_vel[-1, :] = root_ang_vel[-2, :]
+        root_ang_vel = self._smooth(root_ang_vel, 19)
+        
+        # 3) DOF velocities
+        dof_vel = torch.zeros_like(dof_pos)
+        dof_vel[:-1, :] = fps * (dof_pos[1:, :] - dof_pos[:-1, :])
+        dof_vel[-1, :] = dof_vel[-2, :]
+        dof_vel = self._smooth(dof_vel, 19)
+        
+        # 4) Convert velocities to LOCAL frame
+        lin_vel_local = self.quat_rotate_inverse(root_rot, root_vel)
+        ang_vel_local = self.quat_rotate_inverse(root_rot, root_ang_vel)
+        
+        # Vectorized assembly of MVQ frames (no Python loop)
+        mvq_frames = torch.zeros(num_frames, self.TOTAL_FRAME_SIZE, dtype=torch.float32, device=self.device)
+        
+        # Local root deltas per frame (use smoothed velocities divided by fps)
+        mvq_frames[:, self.ROOT_DELTAS_START:self.ROOT_DELTAS_START+3] = lin_vel_local / fps
+        mvq_frames[:, self.ROOT_DELTAS_START+3] = ang_vel_local[:, 2] / fps  # Δyaw approximation from local wz
+        
+        # DOF positions and velocities
+        mvq_frames[:, self.DOF_POSITIONS_START:self.DOF_POSITIONS_END] = dof_pos
+        mvq_frames[:, self.DOF_VELOCITIES_START:self.DOF_VELOCITIES_END] = dof_vel
+        
+        return mvq_frames
 
 
     @property

@@ -251,6 +251,7 @@ class MotionAccuracyEvaluator:
 
         save_path2 = output_path / f"motion_{motion_id}_dof_overlays.png"
         plt.savefig(save_path2, dpi=150)
+        plt.show()
         plt.close(fig2)
         print(f" DOF plots saved to: {save_path2}")
 

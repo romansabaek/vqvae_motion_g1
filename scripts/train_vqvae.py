@@ -229,13 +229,13 @@ python scripts/train_vqvae.py \
 
 
 
-# JSON list format (new):
-python scripts/train_vqvae.py \
+# NPY file format (supports both PKL and NPY):
+python scripts/train_vqvae_npy.py \
   --config configs/agent.yaml \
-  --motion_file /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
-  --motion_ids "[0,1,2,5,10,20,50,100]" \
+  --motion_file /home/baekdh/dh_workspace/data_deploy/deploy_pkl/each_motion_npy \
+  --motion_ids "0-300" \
   --device auto \
-  --output_dir ./outputs/run_specific_ids
+  --output_dir ./outputs/run_npy_32
 
 
 
