@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Tuple, Optional, Dict, Any
 import logging
 import joblib
+import glob
+import re
 from .torch_utils import quat_diff, quat_to_exp_map
 
 logger = logging.getLogger(__name__)
@@ -56,11 +58,16 @@ class MotionDataAdapter:
         """
         Load G1 humanoid motion data and convert to MVQ format.
         Supports both PKL (AMASS) and NPY file formats.
+        Also supports directories containing multiple NPY files.
         Extracts: root deltas (local frame), DOF positions, DOF velocities.
         """
         logger.info(f"Loading motion data from: {motion_file}")
         
         motion_file_path = Path(motion_file)
+        
+        # Check if it's a directory
+        if motion_file_path.is_dir():
+            return self._load_npy_directory(motion_file, motion_ids)
         
         # Check file extension to determine format
         if motion_file_path.suffix.lower() == '.npy':
@@ -191,6 +198,69 @@ class MotionDataAdapter:
         logger.info(f"Frame size breakdown: root_deltas({self.ROOT_DELTAS_DIM}) + dof_positions({self.DOF_POSITIONS_DIM}) + dof_velocities({self.DOF_VELOCITIES_DIM}) = {self.TOTAL_FRAME_SIZE}")
         logger.info(f"Number of motion sequences: {len(self.end_indices)}")
         
+        self._loaded = True
+        return self.mocap_data, self.end_indices, self.frame_size
+    
+    def _load_npy_directory(self, directory: str, motion_ids: Optional[list] = None) -> Tuple[torch.Tensor, np.ndarray, int]:
+        """Load multiple NPY files from a directory. Files should match saved_desired_states_*.npy pattern."""
+        directory_path = Path(directory)
+        if not directory_path.is_dir():
+            raise ValueError(f"Expected directory, got: {directory}")
+        
+        # Find NPY files: try direct, then common subdirs, then recursive
+        patterns = [
+            directory_path / "*.npy",
+            directory_path / "each_motion_npy/*.npy",
+            directory_path / "motions/*.npy",
+            directory_path / "**/*.npy",
+        ]
+        
+        all_npy_files = []
+        for pattern in patterns:
+            all_npy_files = sorted(glob.glob(str(pattern), recursive=(pattern.name == "**")))
+            if all_npy_files:
+                break
+        
+        if not all_npy_files:
+            raise ValueError(f"No NPY files found in directory: {directory}")
+        
+        logger.info(f"Found {len(all_npy_files)} NPY files")
+        
+        # Extract motion IDs from filenames: saved_desired_states_123.npy -> 123
+        def get_motion_id(filepath: str) -> int:
+            match = re.search(r'saved_desired_states_(\d+)\.npy', Path(filepath).name)
+            return int(match.group(1)) if match else 0
+        
+        file_motion_map = [(fp, get_motion_id(fp)) for fp in all_npy_files]
+        file_motion_map.sort(key=lambda x: x[1])  # Sort by motion_id
+        
+        # Filter by motion_ids if provided
+        if motion_ids is not None:
+            motion_ids_set = set(motion_ids)
+            file_motion_map = [(fp, mid) for fp, mid in file_motion_map if mid in motion_ids_set]
+            if not file_motion_map:
+                raise ValueError(f"No NPY files match motion_ids {motion_ids}")
+            logger.info(f"Filtered to {len(file_motion_map)} files")
+        
+        # Load each NPY file and extract features
+        all_features = []
+        end_indices = []
+        current_end = 0
+        
+        for npy_file, motion_id in file_motion_map:
+            logger.info(f"Loading: {Path(npy_file).name} (motion_id: {motion_id})")
+            trajectory_data = np.load(npy_file)
+            motion_features = self._extract_g1_features_from_npy(trajectory_data)
+            all_features.append(motion_features)
+            current_end += motion_features.shape[0]
+            end_indices.append(current_end - 1)
+        
+        # Concatenate and store
+        self.mocap_data = torch.cat(all_features, dim=0).cpu()
+        self.end_indices = np.array(end_indices, dtype=np.int64)
+        self.frame_size = self.mocap_data.shape[1]
+        
+        logger.info(f"Loaded {self.mocap_data.shape[0]} frames, {self.frame_size} features, {len(self.end_indices)} sequences")
         self._loaded = True
         return self.mocap_data, self.end_indices, self.frame_size
     

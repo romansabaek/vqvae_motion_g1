@@ -52,12 +52,30 @@ class MotionAccuracyEvaluator:
 
         # Load motion keys just to know valid range
         print(f"Loading motion data from: {pkl_file}")
-        all_motions = joblib.load(pkl_file)
-        self.motion_keys = list(all_motions.keys())
+        pkl_file_path = Path(pkl_file)
+        
+        # Handle NPY directory vs PKL file
+        is_npy = pkl_file_path.is_dir() or (pkl_file_path.is_file() and pkl_file_path.suffix.lower() == '.npy')
+        
+        if is_npy:
+            # For NPY files/directories, we'll determine count after loading stats
+            # Use a placeholder that will be updated below
+            self.motion_keys = None
+        else:
+            # PKL file format - load keys directly
+            all_motions = joblib.load(pkl_file)
+            self.motion_keys = list(all_motions.keys())
 
         # agent and adapter already initialized above
 
         # Load a subset of motions to compute normalization statistics
+        # For NPY files, determine number of motions first
+        if self.motion_keys is None:
+            # For NPY files, determine number of motions by loading all (or a sample)
+            _, end_indices_full, _ = self.motion_adapter.load_motion_data(self.pkl_file_path, None)
+            num_motions = len(end_indices_full) if end_indices_full is not None else 1
+            self.motion_keys = [f"motion_{i}" for i in range(num_motions)]
+        
         num_motions_to_load = min(max_motions_for_stats, len(self.motion_keys))
         subset_motion_ids = list(range(num_motions_to_load))
         print(f"Loading first {num_motions_to_load} motions for normalization stats...")
@@ -294,11 +312,21 @@ python scripts/eval_vqvae.py \
   --motion_id 0 \
   --output_dir ./evaluation_plots
 
+
+python scripts/eval_vqvae.py \
+  --config configs/agent_codebook_1s_npy.yaml \
+  --checkpoint outputs/agent_codebook_1s_npy/best_model.ckpt \
+  --input_pkl /home/baekdh/dh_workspace/data_deploy/deploy_pkl/each_motion_npy \
+  --motion_id 0 \
+  --output_dir ./evaluation_plots_npy
+
+
+
 python scripts/eval_vqvae.py \
   --config configs/agent.yaml \
   --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/outputs/run_0_300_32/best_model.ckpt \
   --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
-  --motion_id 0 \
+  --motion_id 3 \
   --output_dir ./evaluation_plots_v2
 
 '''

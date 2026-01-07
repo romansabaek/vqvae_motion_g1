@@ -18,6 +18,10 @@ from datetime import datetime
 # Add project root to path
 sys.path.append(os.getcwd())
 
+# Import parse_motion_ids from scripts
+sys.path.append(str(Path(__file__).parent.parent))
+from scripts.vqvae_gen_init import parse_motion_ids
+
 # Global state
 motion_id, time_step, dt, paused = 0, 0, 1 / 30, False
 # dt = 0.02 ############################
@@ -193,6 +197,18 @@ def main():
         action="store_true",
         help="Use original motions instead of VQVAE motions"
     )
+    parser.add_argument(
+        "--motion-ids",
+        type=str,
+        default=None,
+        help='Comma/range list of motion IDs to use when --use-original is set, e.g. "0,2,5-12"'
+    )
+    parser.add_argument(
+        "--input-pkl",
+        type=str,
+        default=None,
+        help="Path to input PKL file containing original motions (required when --use-original is set)"
+    )
     
     args = parser.parse_args()
 
@@ -241,24 +257,47 @@ def main():
     
     if not use_vqvae_motions:
         # Original motion loading (fallback)
-        project_root = Path(__file__).parent.parent
-        data_pkl = str(project_root / "outputs" / "vqvae_motion_0.pkl")
+        if args.input_pkl:
+            # Use provided input PKL path
+            data_pkl = args.input_pkl
+        else:
+            # Try default path
+            project_root = Path(__file__).parent.parent
+            data_pkl = str(project_root / "outputs" / "vqvae_motion_0.pkl")
+            print(f"Warning: --input-pkl not provided, trying default path: {data_pkl}")
         
         if not os.path.exists(data_pkl):
-            raise FileNotFoundError(f"Original motion file not found: {data_pkl}")
+            raise FileNotFoundError(
+                f"Original motion file not found: {data_pkl}\n"
+                f"Please provide a valid PKL file path using --input-pkl argument."
+            )
         
+        print(f"Loading original motions from: {data_pkl}")
         motions = joblib.load(data_pkl)
         all_keys = list(motions.keys())
+        print(f"Loaded {len(all_keys)} motion(s) from PKL file")
         
         # Choose what you want to play (by index or by name)
-        select_id = 0
-        
-        _selected_env = os.getenv("SELECTED_IDS", "").strip()
-        if _selected_env:
-            import re as _re
-            selected = [int(x) for x in _re.split(r"[,\s]+", _selected_env) if x]
+        # Priority: --motion-ids argument > SELECTED_IDS env var > default (0)
+        if args.motion_ids:
+            # Use command-line argument
+            selected = parse_motion_ids(args.motion_ids)
+            print(f"Using motion IDs from --motion-ids argument: {selected}")
         else:
-            selected = [select_id]
+            # Fall back to environment variable or default
+            _selected_env = os.getenv("SELECTED_IDS", "").strip()
+            if _selected_env:
+                import re as _re
+                selected = [int(x) for x in _re.split(r"[,\s]+", _selected_env) if x]
+                print(f"Using motion IDs from SELECTED_IDS environment variable: {selected}")
+            else:
+                selected = [0]
+                print(f"Using default motion ID: {selected}")
+        
+        # Validate motion IDs
+        for idx in selected:
+            if idx < 0 or idx >= len(all_keys):
+                raise ValueError(f"Motion ID {idx} is out of range. Available IDs: 0-{len(all_keys)-1}")
         
         if all(isinstance(x, int) for x in selected):
             motion_names = [all_keys[i] for i in selected]
@@ -266,6 +305,7 @@ def main():
             motion_names = list(selected)
         
         motion_data_all = [motions[k] for k in motion_names]
+        print(f"Loaded {len(motion_data_all)} original motion(s): {motion_names}")
     
     motion_lengths = [m['dof'].shape[0] for m in motion_data_all]
     
@@ -450,5 +490,7 @@ if __name__ == "__main__":
 
 
 # Usage examples:
-# python reference_code/vis_q_mj_bdh_multi_tasks_comp_vqvae.py --robot unitree_g1_kungfu_23dof_bdh
-# python reference_code/vis_q_mj_bdh_multi_tasks_comp_vqvae.py --robot unitree_g1_kungfu_23dof_bdh --motion-files outputs/vqvae_motions/vqvae_motion_001.pkl outputs/vqvae_motions/vqvae_motion_002.pkl
+# python reference_code/vis_q_mj_bdh_multi_tasks_comp_vqvae.py --robot unitree_g1_kungfu_23dof_bdh --motion-files outputs/motion_blocks/motion_block_003.pkl
+
+
+# python reference_code/vis_q_mj_bdh_multi_tasks_comp_vqvae.py --robot unitree_g1_kungfu_23dof_bdh --motion-files outputs/vqvae_amass_motions/vqvae_motion_008.pkl

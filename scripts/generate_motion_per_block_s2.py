@@ -216,17 +216,11 @@ if __name__ == "__main__":
 # Example usage:
 python scripts/generate_motion_per_block_s2.py \
     --config configs/agent.yaml \
-    --checkpoint outputs/run_0_300_v2/best_model.ckpt \
-    --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
+    --checkpoint outputs/run_0_300_32/best_model.ckpt \
+    --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
     --block_ids "1" \
     --output_dir ./outputs/motion_blocks
 
 
-python scripts/generate_motion_per_block_s2.py \
-    --config configs/agent.yaml \
-    --checkpoint outputs/run_0_300_v1/best_model.ckpt \
-    --input_pkl /home/dhbaek/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
-    --block_ids "1" \
-    --output_dir ./outputs/motion_blocks_v1
 
 '''

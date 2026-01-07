@@ -141,6 +141,6 @@ if __name__ == "__main__":
 
 '''
 python scripts/inspect_codebook.py \
-    --config configs/agent.yaml \
-    --checkpoint outputs/run_0_300/best_model.ckpt
+    --config configs/agent_codebook_1s_npy.yaml \
+    --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/checkpoints/best_model.ckpt
 '''

@@ -230,12 +230,12 @@ python scripts/train_vqvae.py \
 
 
 # NPY file format (supports both PKL and NPY):
-python scripts/train_vqvae_npy.py \
-  --config configs/agent.yaml \
+python scripts/train_vqvae.py \
+  --config configs/agent_codebook_1s_npy.yaml \
   --motion_file /home/baekdh/dh_workspace/data_deploy/deploy_pkl/each_motion_npy \
   --motion_ids "0-300" \
   --device auto \
-  --output_dir ./outputs/run_npy_32
+  --output_dir ./outputs/agent_codebook_1s_npy
 
 
 
