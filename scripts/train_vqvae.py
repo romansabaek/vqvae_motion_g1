@@ -220,11 +220,11 @@ if __name__ == "__main__":
 
 # Range format (existing):
 python scripts/train_vqvae.py \
-  --config configs/agent.yaml \
+  --config configs/agent_codebook_switching.yaml \
   --motion_file /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
-  --motion_ids "0-300" \
+  --motion_ids "0-500" \
   --device auto \
-  --output_dir ./outputs/run_0_300_32
+  --output_dir ./outputs/run_0_500_switching
 
 
 
@@ -233,7 +233,7 @@ python scripts/train_vqvae.py \
 python scripts/train_vqvae.py \
   --config configs/agent_codebook_1s_npy.yaml \
   --motion_file /home/baekdh/dh_workspace/data_deploy/deploy_pkl/each_motion_npy \
-  --motion_ids "0-300" \
+  --motion_ids "0-500" \
   --device auto \
   --output_dir ./outputs/agent_codebook_1s_npy
 

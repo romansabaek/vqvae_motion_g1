@@ -180,7 +180,7 @@ def extract_codebook_sequence_from_amass(amass_pkl_path: Path, original_pkl_path
     
     try:
         # Load motion data for stats (use subset of motions from original file)
-        max_motions_for_stats = min(300, len(list(original_data.keys())))
+        max_motions_for_stats = min(500, len(list(original_data.keys())))
         subset_motion_ids = list(range(max_motions_for_stats))
         mocap_data_stats, _, frame_size = motion_adapter.load_motion_data(
             str(original_pkl_path), subset_motion_ids
@@ -602,7 +602,7 @@ def main():
     parser.add_argument(
         "--config",
         type=str,
-        default="configs/agent.yaml",
+        default="configs/agent_codebook_switching.yaml",
         help="Path to config file (for AMASS format feature extraction)"
     )
     parser.add_argument(
@@ -719,10 +719,13 @@ if __name__ == "__main__":
 Example usage:
 
 # Plot from codebook sequence PKL file (has 'original_motion' and 'reconstructed_motion' keys)
+
 python scripts/plot_codebook_pkl.py   \
 --input outputs/vqvae_amass_motions/vqvae_motion_000.pkl \
 --original-pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \   
 --output evaluation_plots_v2/motion_0_original_vs_reconstructed.png
+
+
 
 # Plot ONLY codebook changes over time from codebook sequence PKL file
 python scripts/plot_codebook_pkl.py \
@@ -746,7 +749,7 @@ python scripts/plot_codebook_amass_pkl.py \
 python scripts/plot_codebook_amass_pkl.py \
   --input outputs/vqvae_amass_motions/vqvae_motion_008.pkl \
   --original-pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
-  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/outputs/run_0_300_32/best_model.ckpt \
+  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/outputs/run_0_500_switching/best_model.ckpt \
   --codebook-only \
   --save-csv /home/baekdh/dh_workspace/hrl/humanoidverse/data/motions/sequence_data/codebook_sequences/motion_8_codebook_ids.csv \
   --output evaluation_plots_v2/motion_8_codebook_changes.png

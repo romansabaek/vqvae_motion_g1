@@ -282,7 +282,7 @@ def main():
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint file")
     parser.add_argument("--input_pkl", type=str, required=True, help="Path to input PKL motion data file")
     parser.add_argument("--motion_id", type=int, required=True, help="The ID (index) of the motion to evaluate")
-    parser.add_argument("--max_motions_for_stats", type=int, default=300, help="Max motions to use for normalization stats")
+    parser.add_argument("--max_motions_for_stats", type=int, default=500, help="Max motions to use for normalization stats")
     parser.add_argument("--output_dir", type=str, default="./evaluation_plots", help="Directory to save plots/errors")
     parser.add_argument("--eval_stride", type=int, default=None, help="Stride for overlapped reconstruction (default: window_size//2)")
 
@@ -306,8 +306,8 @@ if __name__ == "__main__":
 '''
 
 python scripts/eval_vqvae.py \
-  --config configs/agent.yaml \
-  --checkpoint outputs/run_0_300/best_model.ckpt \
+  --config configs/agent_codebook_switching.yaml \
+  --checkpoint outputs/run_0_500_switching/best_model.ckpt \
   --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
   --motion_id 0 \
   --output_dir ./evaluation_plots
