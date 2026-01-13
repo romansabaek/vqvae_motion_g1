@@ -130,7 +130,7 @@ def main():
     parser.add_argument(
         "--motion-file",
         type=str,
-        default="/home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl",
+        default="/home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl",
         help="Path to AMASS pkl file",
     )
     parser.add_argument(
