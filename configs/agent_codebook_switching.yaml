@@ -5,8 +5,9 @@ agent:
   config:
     # data loader parameters
     batch_size: 256 # it should be bigger than the len(motion)
-    window_size: 32
+    window_size: 16  # ~0.5 seconds at 30 FPS (16 frames / 30 fps = 0.53s)
     num_workers: 4
+    normalize_observations: false  # Normalize motion data using mean/std statistics
 
     # optimization parameters
     total_iter: 100000
@@ -45,6 +46,41 @@ agent:
     validation_freq: 500  # validate more frequently
     early_stopping_patience: 10  # patience for early stopping
     use_mixed_precision: false  # can enable for faster training if stable
+    
+    # Policy ID auxiliary loss parameters
+    use_policy_loss: true  # Enable policy ID classification auxiliary loss
+    policy_loss_weight: 0.1  # Weight for policy loss in total loss
+    use_policy_loss_warmup: false  # Use policy loss during warmup (optional)
+    policy_classifier_hidden_dim: 256  # Hidden dimension for policy classifier
+    policy_classifier_layers: 2  # Number of layers in policy classifier
+    policy_classifier_dropout: 0.1  # Dropout rate for policy classifier
+    # Policy prediction mode
+    policy_use_sequence_wise: false  # If true: predict policy ID per timestep (sequence-wise). If false: predict one policy ID per window (chunk-wise)
+    # Transition-aware policy loss (for mixed policy IDs in windows) - used for chunk-wise mode
+    policy_use_soft_labels: true  # Use soft labels (distribution) for transition windows, hard labels for stable windows
+    policy_transition_weight: 2.0  # Weight multiplier for transition windows (rare but important)
+    policy_classifier_architecture: "lstm"  # Architecture for chunk-wise: "mlp", "cnn1d", "lstm", or "transformer"
+    # MLP: Fastest, no temporal modeling (average pooling)
+    # CNN1D: Fast, captures local temporal patterns, parallelizable (recommended)
+    # LSTM: Good temporal modeling, moderate speed
+    # Transformer: Best for long-range dependencies, slower but parallelizable
+    policy_classifier_num_heads: 8  # Number of attention heads (for transformer only)
+    policy_classifier_kernel_size: 3  # Kernel size for CNN1D convolutions
+    
+    # Latent Predictor - Next token prediction for dynamics learning
+    use_latent_predictor: true
+    latent_predictor_weight: 0.1
+    latent_predictor_hidden_dim: 256
+    latent_predictor_layers: 2
+    latent_predictor_dropout: 0.1
+    latent_predictor_pred_len: 1
+    latent_predictor_architecture: "cnn1d"  # Architecture: "mlp", "lstm", "transformer", or "cnn1d"
+    # MLP: Simple average pooling (baseline, loses temporal info)
+    # LSTM: Sequential processing (recommended for temporal modeling)
+    # Transformer: Self-attention (best for long-range dependencies)
+    # CNN1D: Fast, captures local patterns
+    latent_predictor_num_heads: 8  # Number of attention heads (for transformer only)
+    latent_predictor_kernel_size: 3  # Kernel size for CNN1D convolutions
 
     
     # Wandb parameters

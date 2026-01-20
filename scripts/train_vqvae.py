@@ -120,9 +120,10 @@ def main():
                        help='Path to file containing motion IDs (one per line or JSON list)')
     parser.add_argument('--motion_id', type=int, default=None, help='Single motion ID to load (for backward compatibility)')
     parser.add_argument('--device', type=str, default='auto', help='Device to use (cuda/cpu/auto)')
-    parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint to resume from')
-    parser.add_argument('--output_dir', type=str, default='./outputs', help='Output directory for checkpoints')
-    parser.add_argument('--resume', action='store_true', help='Resume training from latest checkpoint')
+    parser.add_argument('--checkpoint', type=str, default=None, help='Path to specific checkpoint file to load')
+    parser.add_argument('--output_dir', type=str, default='./outputs', help='Output directory for final models')
+    parser.add_argument('--checkpoint_dir', type=str, default=None, help='Directory to save checkpoints during training (defaults to output_dir if not specified)')
+    parser.add_argument('--resume', action='store_true', help='Automatically resume from most recent checkpoint in output_dir or ./checkpoints')
     parser.add_argument('--validate_only', action='store_true', help='Only run validation on existing model')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     args = parser.parse_args()
@@ -165,6 +166,13 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # Set checkpoint directory (defaults to output_dir if not specified)
+    checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else output_dir
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    config['checkpoint_dir'] = str(checkpoint_dir)
+    log.info(f"Checkpoints will be saved to: {checkpoint_dir}")
+    log.info(f"Final models will be saved to: {output_dir}")
+    
     # Create agent
     agent = MVQVAEAgent(config=config, device=device)
     
@@ -176,10 +184,41 @@ def main():
         log.error(f"Failed to setup agent: {e}")
         raise
     
-    # Load checkpoint if provided
+    # Load checkpoint if provided or resume from latest
+    checkpoint_path = None
     if args.checkpoint:
-        log.info(f"Loading checkpoint from: {args.checkpoint}")
-        agent.load(args.checkpoint)
+        checkpoint_path = Path(args.checkpoint)
+        if not checkpoint_path.exists():
+            log.error(f"Checkpoint file not found: {checkpoint_path}")
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+        log.info(f"Loading checkpoint from: {checkpoint_path}")
+    elif args.resume:
+        # Find the most recent checkpoint
+        # Priority: 1) checkpoint_dir, 2) output_dir, 3) default ./checkpoints directory
+        checkpoint_dirs = []
+        if args.checkpoint_dir:
+            checkpoint_dirs.append(checkpoint_dir)
+        checkpoint_dirs.append(output_dir)
+        default_checkpoint_dir = Path("./checkpoints")
+        if default_checkpoint_dir.exists():
+            checkpoint_dirs.append(default_checkpoint_dir)
+        
+        checkpoint_files = []
+        for checkpoint_dir in checkpoint_dirs:
+            checkpoint_files.extend(list(checkpoint_dir.glob("*.ckpt")))
+        
+        if checkpoint_files:
+            # Sort by modification time, most recent first
+            checkpoint_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            checkpoint_path = checkpoint_files[0]
+            log.info(f"Resuming from most recent checkpoint: {checkpoint_path}")
+            log.info(f"  Checkpoint modified: {checkpoint_path.stat().st_mtime}")
+        else:
+            log.warning("No checkpoint files found. Starting training from scratch.")
+            checkpoint_path = None
+    
+    if checkpoint_path:
+        agent.load(checkpoint_path)
     
     # Start training
     try:
@@ -219,23 +258,49 @@ if __name__ == "__main__":
 # Examples of different motion ID formats:
 
 # Range format (existing):
+
+
+python scripts/train_vqvae.py \
+  --config configs/agent_codebook_switching_base.yaml \
+  --motion_file /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl \
+  --motion_ids "0-1000" \
+  --device cuda:0 \
+  --output_dir ./outputs/run_0_1000_switching_policy_id_base \
+  --checkpoint_dir ./checkpoints/run_0_1000_switching_policy_id_base
+
+
+----------------------------------------------------
+
 python scripts/train_vqvae.py \
   --config configs/agent_codebook_switching.yaml \
-  --motion_file /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
-  --motion_ids "0-500" \
-  --device auto \
-  --output_dir ./outputs/run_0_500_switching
+  --motion_file /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl \
+  --motion_ids "0-1000" \
+  --device cuda:0 \
+  --output_dir ./outputs/run_0_1000_switching_policy_id \
+  --checkpoint_dir ./checkpoints/run_0_1000_switching_policy_id
 
 
-
-
-# NPY file format (supports both PKL and NPY):
 python scripts/train_vqvae.py \
-  --config configs/agent_codebook_1s_npy.yaml \
-  --motion_file /home/baekdh/dh_workspace/data_deploy/deploy_pkl/each_motion_npy \
-  --motion_ids "0-500" \
-  --device auto \
-  --output_dir ./outputs/agent_codebook_1s_npy
+  --config configs/agent_codebook_switching_seq.yaml \
+  --motion_file /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl \
+  --motion_ids "0-1000" \
+  --device cuda:0 \
+  --output_dir ./outputs/run_0_1000_switching_policy_id_seq \
+  --checkpoint_dir ./checkpoints/run_0_1000_switching_policy_id_seq
+
+
+python scripts/train_vqvae.py \
+  --config configs/agent_codebook_switching_seq_cls.yaml \
+  --motion_file /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl \
+  --motion_ids "0-1000" \
+  --device cuda:0 \
+  --output_dir ./outputs/run_0_1000_switching_policy_id_seq_cls \
+  --checkpoint_dir ./checkpoints/run_0_1000_switching_policy_id_seq_cls
+
+
+
+
+
 
 
 

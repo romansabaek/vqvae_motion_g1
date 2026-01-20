@@ -285,7 +285,7 @@ class AMASSFormatGenerator:
             print(f"Loaded {len(self.original_keys)} original AMASS motions")
             
             # Load multiple motions for proper normalization statistics (same as eval_vqvae.py)
-            max_motions_for_stats = min(500, len(self.original_keys))
+            max_motions_for_stats = min(1000, len(self.original_keys))
             subset_motion_ids = list(range(max_motions_for_stats))
             print(f"Loading first {max_motions_for_stats} motions for normalization stats...")
             
@@ -941,11 +941,12 @@ if __name__ == "__main__":
 '''
 # Example usage with PKL format:
 python scripts/generate_motion_from_vqvae_s2.py \
-  --config configs/agent_codebook_switching.yaml \
-  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/outputs/run_0_500_switching/best_model.ckpt \
+  --config /home/baekdh/dh_workspace/vqvae_motion_g1/configs/agent_codebook_switching_base.yaml \
+  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/checkpoints/run_0_1000_switching_policy_id_base/best_model.ckpt \
   --format pkl \
-  --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
-  --motion_ids "0-500" \
+  --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl  \
+  --motion_ids "0-1000" \
+  --extract_codebook \
   --output_dir ./outputs/vqvae_amass_motions
 
 
@@ -953,12 +954,17 @@ python scripts/generate_motion_from_vqvae_s2.py \
 # Example usage for extracting codebook sequences with PKL format:
 python scripts/generate_motion_from_vqvae_s2.py \
   --config configs/agent_codebook_switching.yaml \
-  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/outputs/run_0_500_switching/best_model.ckpt \
+  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/checkpoints/run_0_1000_switching_policy_id/best_model.ckpt \
   --format pkl \
-  --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
-  --motion_ids "0-500" \
+  --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl  \
+  --motion_ids "0-1000" \
   --extract_codebook \
-  --codebook_output_dir ./outputs/codebook_sequences
+  --codebook_output_dir ./outputs/vqvae_amass_motions_w_policy_id
+
+
+
+
+
 
 
 '''

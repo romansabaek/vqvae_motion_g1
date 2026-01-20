@@ -130,6 +130,14 @@ def main():
     print(f"Loading PKL: {args.amass_pkl}")
     pkl_obj = load_pkl(args.amass_pkl)
     
+    # Check and report number of motions in PKL
+    if isinstance(pkl_obj, dict):
+        num_motions = len(pkl_obj)
+        print(f"Found {num_motions} motions in PKL file (dict format)")
+    else:
+        num_motions = len(pkl_obj)
+        print(f"Found {num_motions} motions in PKL file (list format)")
+    
     # Load CSV(s) - handle both single file and directory
     csv_path = Path(args.csv_file)
     if csv_path.is_dir():
@@ -175,18 +183,25 @@ def main():
     else:
         motions_list = [(i, i, pkl_obj[i]) for i in range(len(pkl_obj))]
     
+    total_motions = len(motions_list)
     matched = 0
+    skipped_no_csv = 0
+    skipped_invalid = 0
+    
     for motion_id, motion_key, entry in motions_list:
         if not isinstance(entry, dict):
+            skipped_invalid += 1
             continue
         
         # Get motion length
         T = get_motion_length(entry)
         if T is None:
+            skipped_invalid += 1
             continue
         
         # Check if CSV has data for this motion
         if motion_id not in csv_by_motion:
+            skipped_no_csv += 1
             continue
         
         # Get policy_id sequence from CSV
@@ -205,14 +220,21 @@ def main():
         matched += 1
     
     # Save
-    print(f"Saving to: {args.out_pkl}")
+    print(f"\nSaving to: {args.out_pkl}")
     save_pkl(pkl_obj, args.out_pkl)
-    print(f"Done! Added {args.policy_col} to {matched}/{len(motions_list)} motions")
+    print(f"\nDone! Summary:")
+    print(f"  Total motions in PKL: {total_motions}")
+    print(f"  Motions with {args.policy_col} added: {matched}")
+    if skipped_no_csv > 0:
+        print(f"  Motions skipped (no CSV data): {skipped_no_csv}")
+    if skipped_invalid > 0:
+        print(f"  Motions skipped (invalid): {skipped_invalid}")
 
 
 if __name__ == "__main__":
-    # main()
-    test_features()
+    main()
+    # Uncomment below to run test_features() instead:
+    # test_features()
 
 '''
 python scripts/gen_data_amass_w_policy_id.py \

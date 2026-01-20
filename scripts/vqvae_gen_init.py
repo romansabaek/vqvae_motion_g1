@@ -36,6 +36,9 @@ def infer_frame_size(adapter: MotionDataAdapter, input_pkl_file: str, motion_ids
 
 def initialize_model(agent: MVQVAEAgent, config: Dict, frame_size: int, checkpoint_path: str) -> None:
     from motion_vqvae.models.models import MotionVQVAE
+    from motion_vqvae.models.policy_classifier import PolicyIDClassifier
+    from motion_vqvae.models.latent_predictor import LatentPredictor
+    
     agent.config["frame_size"] = int(frame_size)
     agent.model = MotionVQVAE(
         agent,
@@ -63,6 +66,152 @@ def initialize_model(agent: MVQVAEAgent, config: Dict, frame_size: int, checkpoi
         if mean_t.numel() == frame_size and std_t.numel() == frame_size:
             agent.mean = mean_t
             agent.std = std_t
+    
+    # Load policy classifier if available in checkpoint and config enables it
+    if "policy_classifier" in ckpt and config.get("use_policy_loss", False):
+        policy_state = ckpt["policy_classifier"]
+        # Get num_policies from checkpoint metadata (saved during training)
+        num_policies = ckpt.get("num_policies", None)
+        if num_policies is None:
+            # Fallback: try to infer from state dict (output layer shape)
+            layer_keys = [k for k in policy_state.keys() if "classifier" in k and "weight" in k]
+            if layer_keys:
+                # Find the output layer (smallest out_features among 2D weights)
+                candidates = [(k, policy_state[k]) for k in layer_keys if policy_state[k].ndim == 2]
+                if candidates:
+                    candidates_sorted = sorted(candidates, key=lambda kv: kv[1].shape[0])
+                    num_policies = int(candidates_sorted[0][1].shape[0])
+            if num_policies is None:
+                print("Warning: Could not determine num_policies. Skipping policy classifier loading.")
+                num_policies = None
+        
+        if num_policies is not None:
+            # Helper function to filter state dict by shape compatibility
+            def filter_state_dict_by_shape(model, state_dict):
+                """Filter state dict to only include keys with matching shapes."""
+                model_dict = model.state_dict()
+                filtered = {}
+                for k, v in state_dict.items():
+                    if k in model_dict:
+                        if model_dict[k].shape == v.shape:
+                            filtered[k] = v
+                return filtered
+            
+            # Check if using sequence-wise or chunk-wise classifier
+            use_sequence_wise = config.get("policy_use_sequence_wise", False)
+            
+            if use_sequence_wise:
+                # Sequence-wise classifier
+                from motion_vqvae.models.sequence_policy_classifier import SequencePolicyIDClassifier
+                agent.policy_classifier = SequencePolicyIDClassifier(
+                    num_codebooks=config["nb_code"],
+                    num_policies=num_policies,
+                    code_dim=config["code_dim"],
+                    hidden_dim=config.get("policy_classifier_hidden_dim", 256),
+                    num_layers=config.get("policy_classifier_layers", 2),
+                    dropout=config.get("policy_classifier_dropout", 0.1),
+                    architecture=config.get("policy_classifier_architecture", "lstm"),  # lstm, transformer, or cnn1d
+                    num_heads=config.get("policy_classifier_num_heads", 8),
+                    kernel_size=config.get("policy_classifier_kernel_size", 3),
+                ).to(agent.device)
+                agent.use_sequence_policy = True
+            else:
+                # Chunk-wise classifier (original)
+                agent.policy_classifier = PolicyIDClassifier(
+                    num_codebooks=config["nb_code"],
+                    num_policies=num_policies,
+                    code_dim=config["code_dim"],
+                    hidden_dim=config.get("policy_classifier_hidden_dim", 256),
+                    num_layers=config.get("policy_classifier_layers", 2),
+                    dropout=config.get("policy_classifier_dropout", 0.1),
+                    architecture=config.get("policy_classifier_architecture", "cnn1d"),
+                    num_heads=config.get("policy_classifier_num_heads", 8),
+                    kernel_size=config.get("policy_classifier_kernel_size", 3),
+                ).to(agent.device)
+                agent.use_sequence_policy = False
+            
+            # Try strict loading first
+            try:
+                agent.policy_classifier.load_state_dict(policy_state, strict=True)
+                agent.policy_classifier.eval()
+                agent.use_policy_loss = True
+                print(f"[Load] Policy classifier loaded successfully (strict mode)")
+            except RuntimeError as e:
+                # Fallback: try partial loading with shape filtering
+                print(f"[Load] Strict loading failed: {e}")
+                print(f"[Load] Attempting partial loading (filtering by shape compatibility)...")
+                filtered_state = filter_state_dict_by_shape(agent.policy_classifier, policy_state)
+                if len(filtered_state) > 0:
+                    try:
+                        agent.policy_classifier.load_state_dict(filtered_state, strict=False)
+                        agent.policy_classifier.eval()
+                        agent.use_policy_loss = True
+                        print(f"[Load] Policy classifier loaded partially: {len(filtered_state)}/{len(policy_state)} keys matched")
+                    except Exception as e2:
+                        print(f"[Load] Partial loading also failed: {e2}")
+                        print(f"[Load] Skipping policy classifier loading. Model will continue without policy prediction.")
+                        agent.policy_classifier = None
+                        agent.use_policy_loss = False
+                else:
+                    print(f"[Load] No compatible keys found. Skipping policy classifier loading.")
+                    agent.policy_classifier = None
+                    agent.use_policy_loss = False
+            
+            # Load policy_id_to_class if available
+            if "policy_id_to_class" in ckpt and agent.policy_classifier is not None:
+                agent.policy_id_to_class = ckpt["policy_id_to_class"]
+    
+    # Load latent predictor if available in checkpoint and config enables it
+    if "latent_predictor" in ckpt and config.get("use_latent_predictor", False):
+        # Helper function to filter state dict by shape compatibility
+        def filter_state_dict_by_shape(model, state_dict):
+            """Filter state dict to only include keys with matching shapes."""
+            model_dict = model.state_dict()
+            filtered = {}
+            for k, v in state_dict.items():
+                if k in model_dict:
+                    if model_dict[k].shape == v.shape:
+                        filtered[k] = v
+            return filtered
+        
+        agent.latent_predictor = LatentPredictor(
+            num_codebooks=config["nb_code"],
+            code_dim=config["code_dim"],
+            hidden_dim=config.get("latent_predictor_hidden_dim", 256),
+            num_layers=config.get("latent_predictor_layers", 2),
+            dropout=config.get("latent_predictor_dropout", 0.1),
+            pred_len=config.get("latent_predictor_pred_len", 1),
+            architecture=config.get("latent_predictor_architecture", "mlp"),
+            num_heads=config.get("latent_predictor_num_heads", 8),
+            kernel_size=config.get("latent_predictor_kernel_size", 3),
+        ).to(agent.device)
+        
+        # Try strict loading first
+        try:
+            agent.latent_predictor.load_state_dict(ckpt["latent_predictor"], strict=True)
+            agent.latent_predictor.eval()
+            agent.use_latent_predictor = True
+            print(f"[Load] Latent predictor loaded successfully (strict mode)")
+        except RuntimeError as e:
+            # Fallback: try partial loading with shape filtering
+            print(f"[Load] Strict loading failed for latent predictor: {e}")
+            print(f"[Load] Attempting partial loading (filtering by shape compatibility)...")
+            filtered_state = filter_state_dict_by_shape(agent.latent_predictor, ckpt["latent_predictor"])
+            if len(filtered_state) > 0:
+                try:
+                    agent.latent_predictor.load_state_dict(filtered_state, strict=False)
+                    agent.latent_predictor.eval()
+                    agent.use_latent_predictor = True
+                    print(f"[Load] Latent predictor loaded partially: {len(filtered_state)}/{len(ckpt['latent_predictor'])} keys matched")
+                except Exception as e2:
+                    print(f"[Load] Partial loading also failed: {e2}")
+                    print(f"[Load] Skipping latent predictor loading. Model will continue without latent prediction.")
+                    agent.latent_predictor = None
+                    agent.use_latent_predictor = False
+            else:
+                print(f"[Load] No compatible keys found. Skipping latent predictor loading.")
+                agent.latent_predictor = None
+                agent.use_latent_predictor = False
 
 
 def ensure_stats(agent: MVQVAEAgent, mocap_data_for_stats: torch.Tensor) -> None:

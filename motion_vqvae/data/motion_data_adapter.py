@@ -52,7 +52,13 @@ class MotionDataAdapter:
         self.mocap_data = None
         self.end_indices = None
         self.frame_size = None
+        self.policy_ids = None  # Policy IDs per frame [F] - None if not available
         self._loaded = False
+        
+        # Normalization statistics
+        self.mean = None
+        self.std = None
+        self._normalized = False
     
     def load_motion_data(self, motion_file: str, motion_ids: Optional[list] = None) -> Tuple[torch.Tensor, np.ndarray, int]:
         """
@@ -98,6 +104,7 @@ class MotionDataAdapter:
         
         # Extract features for specified motions
         all_features = []
+        all_policy_ids = []
         end_indices = []
         current_end = 0
         
@@ -107,6 +114,23 @@ class MotionDataAdapter:
             # Extract features for this motion
             motion_features = self._extract_g1_features(motion_data)
             all_features.append(motion_features)
+            
+            # Extract policy IDs if available
+            if "policy_id" in motion_data:
+                policy_id_seq = np.asarray(motion_data["policy_id"], dtype=np.int64)
+                num_frames = motion_features.shape[0]
+                # Align policy_id length with motion frames
+                if len(policy_id_seq) > num_frames:
+                    policy_id_seq = policy_id_seq[:num_frames]
+                elif len(policy_id_seq) < num_frames:
+                    # Pad with last value or -1 if empty
+                    pad_value = policy_id_seq[-1] if len(policy_id_seq) > 0 else -1
+                    policy_id_seq = np.pad(policy_id_seq, (0, num_frames - len(policy_id_seq)), 
+                                         constant_values=pad_value)
+                all_policy_ids.append(policy_id_seq)
+            else:
+                # No policy_id available for this motion
+                all_policy_ids.append(None)
             
             # Update end index
             current_end += motion_features.shape[0]
@@ -119,9 +143,50 @@ class MotionDataAdapter:
         self.end_indices = np.array(end_indices, dtype=np.int64)
         self.frame_size = self.mocap_data.shape[1]
         
+        # Concatenate policy IDs if available
+        valid_policy_ids = [pid for pid in all_policy_ids if pid is not None]
+        if valid_policy_ids:
+            # Check if all motions have policy IDs
+            if len(valid_policy_ids) == len(all_policy_ids):
+                self.policy_ids = np.concatenate(valid_policy_ids)
+                logger.info(f"Loaded policy IDs: {len(self.policy_ids)} frames")
+            else:
+                # Some motions have policy IDs, some don't - set to None to avoid confusion
+                missing_count = len(all_policy_ids) - len(valid_policy_ids)
+                logger.warning(f"Only {len(valid_policy_ids)}/{len(all_policy_ids)} motions have policy IDs ({missing_count} missing). Setting policy_ids to None.")
+                
+                # Optional strict validation: fail if policy IDs are expected but not all motions have them
+                if self.config.get('require_all_policy_ids', False):
+                    raise ValueError(
+                        f"Policy IDs are required but {missing_count}/{len(all_policy_ids)} motions are missing policy IDs. "
+                        f"Either add policy IDs to all motions or set 'require_all_policy_ids: false' in config."
+                    )
+                
+                self.policy_ids = None
+        else:
+            self.policy_ids = None
+            logger.info("No policy IDs found in motion data")
+            
+            # Optional strict validation: fail if policy IDs are expected but none found
+            if self.config.get('require_all_policy_ids', False):
+                raise ValueError(
+                    f"Policy IDs are required but none found in any of the {len(all_policy_ids)} motions. "
+                    f"Either add policy IDs to motions or set 'require_all_policy_ids: false' in config."
+                )
+        
+        # Store per-motion policy IDs list for later access (even if not all motions have policy IDs)
+        self.all_policy_ids_per_motion = all_policy_ids
+        
         logger.info(f"Loaded G1 humanoid motion data: {self.mocap_data.shape[0]} frames, {self.frame_size} features")
         logger.info(f"Frame size breakdown: root_deltas({self.ROOT_DELTAS_DIM}) + dof_positions({self.DOF_POSITIONS_DIM}) + dof_velocities({self.DOF_VELOCITIES_DIM}) = {self.TOTAL_FRAME_SIZE}")
         logger.info(f"Number of motion sequences: {len(self.end_indices)}")
+        
+        # Compute normalization statistics
+        self._compute_normalization_stats()
+        
+        # Apply normalization if enabled in config
+        if self.config.get('normalize_observations', False):
+            self._normalize_data()
         
         self._loaded = True
         return self.mocap_data, self.end_indices, self.frame_size
@@ -198,6 +263,13 @@ class MotionDataAdapter:
         logger.info(f"Frame size breakdown: root_deltas({self.ROOT_DELTAS_DIM}) + dof_positions({self.DOF_POSITIONS_DIM}) + dof_velocities({self.DOF_VELOCITIES_DIM}) = {self.TOTAL_FRAME_SIZE}")
         logger.info(f"Number of motion sequences: {len(self.end_indices)}")
         
+        # Compute normalization statistics
+        self._compute_normalization_stats()
+        
+        # Apply normalization if enabled in config
+        if self.config.get('normalize_observations', False):
+            self._normalize_data()
+        
         self._loaded = True
         return self.mocap_data, self.end_indices, self.frame_size
     
@@ -261,6 +333,14 @@ class MotionDataAdapter:
         self.frame_size = self.mocap_data.shape[1]
         
         logger.info(f"Loaded {self.mocap_data.shape[0]} frames, {self.frame_size} features, {len(self.end_indices)} sequences")
+        
+        # Compute normalization statistics
+        self._compute_normalization_stats()
+        
+        # Apply normalization if enabled in config
+        if self.config.get('normalize_observations', False):
+            self._normalize_data()
+        
         self._loaded = True
         return self.mocap_data, self.end_indices, self.frame_size
     
@@ -328,11 +408,11 @@ class MotionDataAdapter:
         # Local root deltas per frame (use smoothed velocities divided by fps)
         mvq_frames[:, self.ROOT_DELTAS_START:self.ROOT_DELTAS_START+3] = lin_vel_local / fps
         mvq_frames[:, self.ROOT_DELTAS_START+3] = ang_vel_local[:, 2] / fps  # Δyaw approximation from local wz
-        
+
         # DOF positions and velocities
         mvq_frames[:, self.DOF_POSITIONS_START:self.DOF_POSITIONS_END] = dof_pos
         mvq_frames[:, self.DOF_VELOCITIES_START:self.DOF_VELOCITIES_END] = dof_vel
-        
+
         return mvq_frames
 
 
@@ -357,6 +437,92 @@ class MotionDataAdapter:
         if not self._loaded or self.end_indices is None:
             raise RuntimeError("MotionDataAdapter: call load_motion_data() before get_mvq_end_indices().")
         return self.end_indices
+    
+    def get_policy_ids(self) -> Optional[np.ndarray]:
+        """
+        Return cached policy IDs as numpy array, or None if not available.
+        """
+        if not self._loaded:
+            raise RuntimeError("MotionDataAdapter: call load_motion_data() before get_policy_ids().")
+        return self.policy_ids
+    
+    def get_normalization_stats(self) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Return normalization statistics (mean, std) if computed.
+        
+        Returns:
+            Tuple of (mean, std) tensors, or (None, None) if not computed
+        """
+        return self.mean, self.std
+    
+    def _compute_normalization_stats(self):
+        """Compute mean and std statistics for normalization."""
+        if self.mocap_data is None:
+            return
+        
+        self.mean = self.mocap_data.mean(dim=0)
+        self.std = self.mocap_data.std(dim=0)
+        # Avoid division by zero
+        self.std[self.std == 0] = 1.0
+        logger.info("Computed normalization statistics (mean, std)")
+    
+    def _normalize_data(self):
+        """Normalize the loaded motion data using computed statistics."""
+        if self.mocap_data is None:
+            raise RuntimeError("No motion data loaded. Call load_motion_data() first.")
+        
+        if self.mean is None or self.std is None:
+            self._compute_normalization_stats()
+        
+        self.mocap_data = (self.mocap_data - self.mean) / self.std
+        self._normalized = True
+        logger.info("Normalized motion data using computed statistics")
+    
+    def denormalize_data(self, data: torch.Tensor) -> torch.Tensor:
+        """
+        Denormalize data using stored normalization statistics.
+        
+        Args:
+            data: Normalized data tensor [..., frame_size]
+            
+        Returns:
+            Denormalized data tensor
+        """
+        if self.mean is None or self.std is None:
+            raise RuntimeError("Normalization statistics not computed. Call load_motion_data() first.")
+        
+        return data * self.std + self.mean
+    
+    def check_motion_has_policy_ids(self, motion_file: str, motion_id: int) -> bool:
+        """
+        Check if a specific motion has policy IDs without loading all data.
+        
+        Args:
+            motion_file: Path to PKL file
+            motion_id: Motion ID to check
+            
+        Returns:
+            True if the motion has policy IDs, False otherwise
+        """
+        try:
+            motion_file_path = Path(motion_file)
+            if motion_file_path.suffix.lower() != '.pkl':
+                # For NPY files, we can't easily check without loading
+                return False
+            
+            motion_data_dict = joblib.load(motion_file)
+            motion_keys_all = list(motion_data_dict.keys())
+            
+            if not (0 <= motion_id < len(motion_keys_all)):
+                return False
+            
+            motion_key = motion_keys_all[motion_id]
+            motion_data = motion_data_dict[motion_key]
+            
+            return "policy_id" in motion_data and motion_data["policy_id"] is not None
+        except Exception as e:
+            logger.warning(f"Error checking policy IDs for motion {motion_id}: {e}")
+            return False
     
     def _extract_g1_features(self, motion_data) -> torch.Tensor:
         """

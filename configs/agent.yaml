@@ -45,6 +45,14 @@ agent:
     validation_freq: 500  # validate more frequently
     early_stopping_patience: 10  # patience for early stopping
     use_mixed_precision: false  # can enable for faster training if stable
+    
+    # Policy ID auxiliary loss parameters
+    use_policy_loss: true  # Enable policy ID classification auxiliary loss
+    policy_loss_weight: 0.1  # Weight for policy loss in total loss
+    use_policy_loss_warmup: false  # Use policy loss during warmup (optional)
+    policy_classifier_hidden_dim: 256  # Hidden dimension for policy classifier
+    policy_classifier_layers: 2  # Number of layers in policy classifier
+    policy_classifier_dropout: 0.1  # Dropout rate for policy classifier
 
 
     
