@@ -239,8 +239,8 @@ if __name__ == "__main__":
 '''
 python scripts/gen_data_amass_w_policy_id.py \
   --amass_pkl /home/baekdh/dh_workspace/data_phc/data/amass/valid_jh/amass_train.pkl \
-  --csv_file /home/baekdh/dh_workspace/hrl/humanoidverse/data/motions/single_option_framework \
-  --out_pkl /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl \
+  --csv_file /home/baekdh/dh_workspace/hrl/humanoidverse/data/motions/motion_prior_iner \
+  --out_pkl /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id_hh.pkl \
   --policy_col "policy_id" 
 
 '''

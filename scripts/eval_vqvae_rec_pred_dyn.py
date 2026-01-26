@@ -759,7 +759,7 @@ python scripts/eval_vqvae_rec_pred_dyn.py \
   --config configs/agent_codebook_switching.yaml \
   --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/checkpoints/run_0_1000_switching_policy_id/best_model.ckpt \
   --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl \
-  --motion_id 211 \
+  --motion_id 8 \
   --output_dir ./evaluation_plots_rec_pred_dyn
 
 
