@@ -17,6 +17,7 @@ from .models.models import MotionVQVAE
 from .models.policy_classifier import PolicyIDClassifier
 from .models.sequence_policy_classifier import SequencePolicyIDClassifier
 from .models.latent_predictor import LatentPredictor
+from .models.motion_predictor import MotionPredictor
 from .data.vq_dataset import MotionVQDataset, cycle
 from .data.motion_data_adapter import MotionDataAdapter
 from .utils.utils import cal_loss, cal_vel_loss
@@ -83,6 +84,9 @@ class StatsLogger:
                 if "ep_latent_pred_loss" in data:
                     metrics["train/latent_predictor_loss"] = data["ep_latent_pred_loss"]
                     metrics["train/total_loss"] += data["ep_latent_pred_loss"]
+                if "ep_motion_pred_loss" in data:
+                    metrics["train/motion_predictor_loss"] = data["ep_motion_pred_loss"]
+                    metrics["train/total_loss"] += data["ep_motion_pred_loss"]
                 wandb.log(metrics, step=ep)
         
         elif "val_loss" in data:
@@ -100,6 +104,8 @@ class StatsLogger:
                     metrics["val/policy_loss"] = data["val_policy_loss"]
                 if "val_latent_pred_loss" in data:
                     metrics["val/latent_predictor_loss"] = data["val_latent_pred_loss"]
+                if "val_motion_pred_loss" in data:
+                    metrics["val/motion_predictor_loss"] = data["val_motion_pred_loss"]
                 wandb.log(metrics, step=ep)
 
 
@@ -200,8 +206,10 @@ class MVQVAEAgent:
         # Auxiliary models (initialized to None, set up in setup_from_file or load)
         self.policy_classifier = None
         self.latent_predictor = None
+        self.motion_predictor = None
         self.use_policy_loss = False
         self.use_latent_predictor = False
+        self.use_motion_predictor = False
         self.policy_id_to_class = {}
 
     def setup_from_file(self, motion_file: str, motion_ids: Optional[list] = None):
@@ -316,7 +324,7 @@ class MVQVAEAgent:
             self.policy_id_to_class = {pid: idx for idx, pid in enumerate(unique_policies)}
             log.info(f"Policy ID mapping: {self.policy_id_to_class}")
         
-        # Initialize latent predictor for dynamics learning
+        # Initialize latent predictor for dynamics learning (legacy, for predicting next token)
         self.latent_predictor = None
         self.use_latent_predictor = self.config.get('use_latent_predictor', False)
         
@@ -335,17 +343,43 @@ class MVQVAEAgent:
                 kernel_size=self.config.get('latent_predictor_kernel_size', 3),  # For CNN1D
             ).to(self.device)
         
-        # Setup optimizer - include policy classifier and latent predictor if available
+        # Initialize motion predictor for future raw motion prediction (e.g., 0.5 seconds ahead)
+        self.motion_predictor = None
+        self.use_motion_predictor = self.config.get('use_motion_predictor', False)
+        
+        if self.use_motion_predictor:
+            architecture = self.config.get('motion_predictor_architecture', 'lstm')  # 'mlp', 'lstm', 'transformer', or 'cnn1d'
+            # Calculate pred_frames: 0.5 seconds ahead at 30 FPS = 15 frames
+            fps = self.config.get('fps', 30.0)
+            future_time = self.config.get('motion_predictor_future_time', 0.5)  # seconds ahead
+            pred_frames = int(fps * future_time)
+            log.info(f"Initializing motion predictor for future raw motion prediction (architecture: {architecture}, {future_time}s ahead = {pred_frames} frames at {fps} FPS)")
+            self.motion_predictor = MotionPredictor(
+                num_codebooks=self.config['nb_code'],
+                code_dim=self.config['code_dim'],
+                frame_size=self.frame_size,
+                hidden_dim=self.config.get('motion_predictor_hidden_dim', 256),
+                num_layers=self.config.get('motion_predictor_layers', 2),
+                dropout=self.config.get('motion_predictor_dropout', 0.1),
+                pred_frames=pred_frames,
+                architecture=architecture,
+                num_heads=self.config.get('motion_predictor_num_heads', 8),  # For transformer
+                kernel_size=self.config.get('motion_predictor_kernel_size', 3),  # For CNN1D
+            ).to(self.device)
+        
+        # Setup optimizer - include policy classifier, latent predictor, and motion predictor if available
         model_params = list(self.model.parameters())
         if self.policy_classifier is not None:
             model_params += list(self.policy_classifier.parameters())
         if self.latent_predictor is not None:
             model_params += list(self.latent_predictor.parameters())
+        if self.motion_predictor is not None:
+            model_params += list(self.motion_predictor.parameters())
         
         self.optimizer = optim.AdamW(model_params, lr=self.config['lr'], betas=(0.9, 0.99), weight_decay=self.config['weight_decay'])
         self.scheduler = optim.lr_scheduler.MultiStepLR(self.optimizer, milestones=self.config['lr_scheduler'], gamma=self.config['gamma'])
 
-        log.info(f"Setup complete. Model type: MotionVQVAE, Frame size: {self.frame_size}, Policy loss: {self.use_policy_loss}, Latent predictor: {self.use_latent_predictor}")
+        log.info(f"Setup complete. Model type: MotionVQVAE, Frame size: {self.frame_size}, Policy loss: {self.use_policy_loss}, Latent predictor: {self.use_latent_predictor}, Motion predictor: {self.use_motion_predictor}")
 
     
     def load(self, checkpoint: Optional[Path]):
@@ -367,6 +401,8 @@ class MVQVAEAgent:
             self.policy_classifier.load_state_dict(state_dict["policy_classifier"])
         if "latent_predictor" in state_dict and self.latent_predictor is not None:
             self.latent_predictor.load_state_dict(state_dict["latent_predictor"])
+        if "motion_predictor" in state_dict and self.motion_predictor is not None:
+            self.motion_predictor.load_state_dict(state_dict["motion_predictor"])
         if "optimizer" in state_dict and hasattr(self, 'optimizer') and self.optimizer is not None:
             try:
                 self.optimizer.load_state_dict(state_dict["optimizer"])
@@ -406,6 +442,8 @@ class MVQVAEAgent:
             state["policy_id_to_class"] = self.policy_id_to_class
         if self.latent_predictor is not None:
             state["latent_predictor"] = self.latent_predictor.state_dict()
+        if self.motion_predictor is not None:
+            state["motion_predictor"] = self.motion_predictor.state_dict()
         # Save normalization statistics for inference
         if hasattr(self, 'mean') and self.mean is not None:
             state["mean"] = self.mean.cpu()
@@ -460,6 +498,8 @@ class MVQVAEAgent:
             self.policy_classifier.eval()
         if self.latent_predictor is not None:
             self.latent_predictor.eval()
+        if self.motion_predictor is not None:
+            self.motion_predictor.eval()
         
         total_loss = 0.0
         total_recon_loss = 0.0
@@ -468,6 +508,7 @@ class MVQVAEAgent:
         total_perplexity = 0.0
         total_policy_loss = 0.0
         total_latent_pred_loss = 0.0
+        total_motion_pred_loss = 0.0
         
         for i in range(num_batches):
             try:
@@ -520,6 +561,46 @@ class MVQVAEAgent:
                         loss = loss + latent_pred_weight * loss_latent_pred
                         total_latent_pred_loss += loss_latent_pred.item()
                 
+                # Motion predictor loss (same logic as training)
+                if self.use_motion_predictor:
+                    codebook_seqs = self.model.encode(motion)
+                    fps = self.config.get('fps', 30.0)
+                    future_time = self.config.get('motion_predictor_future_time', 0.5)
+                    pred_frames = int(fps * future_time)
+                    window_size = motion.shape[1]
+                    
+                    if window_size > pred_frames:
+                        input_seq = codebook_seqs
+                        # Target: future raw motion frames starting from position pred_frames ahead
+                        target_start_idx = pred_frames
+                        target_end_idx = min(target_start_idx + pred_frames, window_size)
+                        target_motion = motion[:, target_start_idx:target_end_idx, :]
+                        
+                        # If we don't have enough frames, pad with the last frame
+                        if target_motion.shape[1] < pred_frames:
+                            last_frame = motion[:, -1:, :].repeat(1, pred_frames - target_motion.shape[1], 1)
+                            target_motion = torch.cat([target_motion, last_frame], dim=1)
+                        
+                        pred_motion = self.motion_predictor(input_seq)
+                        
+                        # Ensure target and prediction have the same shape
+                        if target_motion.shape[1] != pred_frames:
+                            target_motion = target_motion[:, :pred_frames, :]
+                        
+                        loss_type = self.config.get('motion_predictor_loss_type', 'mse')
+                        if loss_type == 'mse':
+                            loss_motion_pred = F.mse_loss(pred_motion, target_motion)
+                        elif loss_type == 'l1':
+                            loss_motion_pred = F.l1_loss(pred_motion, target_motion)
+                        elif loss_type == 'smooth_l1':
+                            loss_motion_pred = F.smooth_l1_loss(pred_motion, target_motion)
+                        else:
+                            loss_motion_pred = F.mse_loss(pred_motion, target_motion)
+                        
+                        motion_pred_weight = self.config.get('motion_predictor_weight', 0.1)
+                        loss = loss + motion_pred_weight * loss_motion_pred
+                        total_motion_pred_loss += loss_motion_pred.item()
+                
                 total_loss += loss.item()
                 total_recon_loss += loss_mot.item()
                 total_vel_loss += loss_vel.item()
@@ -533,6 +614,8 @@ class MVQVAEAgent:
             self.policy_classifier.train()
         if self.latent_predictor is not None:
             self.latent_predictor.train()
+        if self.motion_predictor is not None:
+            self.motion_predictor.train()
         
         result = {
             'val_loss': total_loss / num_batches,
@@ -545,6 +628,8 @@ class MVQVAEAgent:
             result['val_policy_loss'] = total_policy_loss / num_batches
         if self.use_latent_predictor:
             result['val_latent_pred_loss'] = total_latent_pred_loss / num_batches
+        if self.use_motion_predictor:
+            result['val_motion_pred_loss'] = total_motion_pred_loss / num_batches
         
         return result
 
@@ -693,6 +778,61 @@ class MVQVAEAgent:
                     # Add to total loss with weight
                     latent_pred_weight = self.config.get('latent_predictor_weight', 0.1)
                     loss = loss + latent_pred_weight * loss_latent_pred
+            
+            # --- Motion Predictor Loss (Future Raw Motion Prediction) ---
+            loss_motion_pred = torch.tensor(0.0, device=self.device)
+            if self.use_motion_predictor:
+                # Get codebook sequences from the model
+                codebook_seqs = self.model.encode(motion)  # [batch_size, seq_len]
+                
+                # Calculate how many frames to predict ahead (e.g., 0.5 seconds)
+                fps = self.config.get('fps', 30.0)
+                future_time = self.config.get('motion_predictor_future_time', 0.5)  # seconds ahead
+                pred_frames = int(fps * future_time)
+                
+                # motion shape: [batch_size, window_size, frame_size]
+                # We need to extract future motion frames from the motion tensor
+                window_size = motion.shape[1]
+                
+                if window_size > pred_frames:
+                    # Use codebook sequence from the current window to predict motion frames that are pred_frames ahead
+                    # Input: codebook sequence from the entire current window
+                    input_seq = codebook_seqs  # [batch_size, seq_len]
+                    
+                    # Target: future raw motion frames starting from position pred_frames ahead in the window
+                    # This simulates predicting 0.5 seconds into the future
+                    # Target is the motion frames starting from index pred_frames
+                    target_start_idx = pred_frames
+                    target_end_idx = min(target_start_idx + pred_frames, window_size)
+                    target_motion = motion[:, target_start_idx:target_end_idx, :]  # [batch_size, actual_frames, frame_size]
+                    
+                    # If we don't have enough frames, pad with the last frame
+                    if target_motion.shape[1] < pred_frames:
+                        last_frame = motion[:, -1:, :].repeat(1, pred_frames - target_motion.shape[1], 1)
+                        target_motion = torch.cat([target_motion, last_frame], dim=1)
+                    
+                    # Predict future motion
+                    pred_motion = self.motion_predictor(input_seq)  # [batch_size, pred_frames, frame_size]
+                    
+                    # Ensure target and prediction have the same shape
+                    if target_motion.shape[1] != pred_frames:
+                        target_motion = target_motion[:, :pred_frames, :]
+                    
+                    # Compute MSE loss on raw motion features
+                    # Optionally use L1 loss or smooth L1 loss
+                    loss_type = self.config.get('motion_predictor_loss_type', 'mse')  # 'mse', 'l1', 'smooth_l1'
+                    if loss_type == 'mse':
+                        loss_motion_pred = F.mse_loss(pred_motion, target_motion)
+                    elif loss_type == 'l1':
+                        loss_motion_pred = F.l1_loss(pred_motion, target_motion)
+                    elif loss_type == 'smooth_l1':
+                        loss_motion_pred = F.smooth_l1_loss(pred_motion, target_motion)
+                    else:
+                        raise ValueError(f"Unknown motion predictor loss type: {loss_type}")
+                    
+                    # Add to total loss with weight
+                    motion_pred_weight = self.config.get('motion_predictor_weight', 0.1)
+                    loss = loss + motion_pred_weight * loss_motion_pred
 
             # --- Backward Pass & Optimization ---
             self.optimizer.zero_grad()
@@ -711,6 +851,8 @@ class MVQVAEAgent:
                 log_data["ep_policy_loss"] = loss_policy.item()
             if self.use_latent_predictor:
                 log_data["ep_latent_pred_loss"] = loss_latent_pred.item()
+            if self.use_motion_predictor:
+                log_data["ep_motion_pred_loss"] = loss_motion_pred.item()
             
             logger.log_stats(log_data, self.config['print_iter'])
 
@@ -732,6 +874,8 @@ class MVQVAEAgent:
                     val_log_data['val_policy_loss'] = val_stats['val_policy_loss']
                 if 'val_latent_pred_loss' in val_stats:
                     val_log_data['val_latent_pred_loss'] = val_stats['val_latent_pred_loss']
+                if 'val_motion_pred_loss' in val_stats:
+                    val_log_data['val_motion_pred_loss'] = val_stats['val_motion_pred_loss']
                 logger.log_stats(val_log_data, self.config['print_iter'])
                 
                 # Save best model

@@ -66,7 +66,7 @@ def convert_motion_ids_to_policy_ids(motion_ids: np.ndarray, method_ids: List[in
         seq_idx = motion_id_to_idx[mid]
         if 0 <= seq_idx < len(method_ids):
             policy_ids[motion_ids == mid] = int(method_ids[seq_idx])
-    else:
+        else:
             policy_ids[motion_ids == mid] = 0
     return policy_ids
 
@@ -311,6 +311,63 @@ class LSTMPolicyIDEvaluator:
             pred_per_frame[no_vote] = int(pred_per_window[-1])
         return pred_per_frame
 
+    def _aggregate_window_metrics_to_frames(
+        self, 
+        window_probs: torch.Tensor, 
+        starts: List[int], 
+        T: int
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Aggregate window-level probabilities to frame-level metrics.
+        
+        Args:
+            window_probs: (N, num_policies) probability tensor per window
+            starts: List of start indices for each window
+            T: Total number of frames
+        
+        Returns:
+            probs_per_frame: (T, num_policies) averaged probabilities per frame
+            entropy_per_frame: (T,) entropy per frame
+            confidence_per_frame: (T,) max probability (confidence) per frame
+        """
+        W = self.window_size
+        num_policies = window_probs.shape[1]
+        
+        # Accumulate probabilities and counts per frame
+        prob_sum = torch.zeros((T, num_policies), device=self.device, dtype=torch.float32)
+        count = torch.zeros(T, device=self.device, dtype=torch.float32)
+        
+        for i, s in enumerate(starts):
+            end = min(s + W, T)
+            prob_sum[s:end] += window_probs[i:i+1].expand(end - s, -1)
+            count[s:end] += 1.0
+        
+        # Average probabilities (handle frames with no votes)
+        eps = 1e-8
+        count_np = count.detach().cpu().numpy()
+        no_vote = (count_np < eps)
+        
+        # Compute averaged probabilities
+        count_clamped = count.clamp_min(eps)
+        probs_per_frame = (prob_sum / count_clamped.unsqueeze(-1)).detach().cpu().numpy()
+        
+        # Compute entropy: -sum(p * log(p + eps))
+        probs_clamped = torch.clamp(prob_sum / count_clamped.unsqueeze(-1), min=eps, max=1.0 - eps)
+        entropy_per_frame = (-torch.sum(probs_clamped * torch.log(probs_clamped + eps), dim=1)).detach().cpu().numpy()
+        
+        # Compute confidence: max probability
+        confidence_per_frame = torch.max(probs_clamped, dim=1)[0].detach().cpu().numpy()
+        
+        # Handle frames with no votes (use last window's values)
+        if no_vote.any() and len(starts) > 0:
+            last_probs = window_probs[-1].detach().cpu().numpy()
+            probs_per_frame[no_vote] = last_probs
+            last_entropy = -np.sum(last_probs * np.log(last_probs + eps))
+            entropy_per_frame[no_vote] = last_entropy
+            confidence_per_frame[no_vote] = np.max(last_probs)
+        
+        return probs_per_frame, entropy_per_frame, confidence_per_frame
+
     def _boundary_breakdown(self, gt: np.ndarray, pred: np.ndarray, motion_ids_raw: np.ndarray, radius: int) -> Dict[str, float]:
         """Compute accuracy near/outside switch boundary."""
         switch_idx = find_first_switch_index(motion_ids_raw)
@@ -392,9 +449,13 @@ class LSTMPolicyIDEvaluator:
         self.model.eval()
         with torch.no_grad():
             logits = self.model(windows)  # (N, num_policies)
+            probs_per_window = torch.softmax(logits, dim=1)  # (N, num_policies)
             pred_per_window = torch.argmax(logits, dim=1).detach().cpu().numpy().astype(np.int64)
 
         pred_per_frame = self._vote_windows_to_frames(pred_per_window, starts, T)
+        probs_per_frame, entropy_per_frame, confidence_per_frame = self._aggregate_window_metrics_to_frames(
+            probs_per_window, starts, T
+        )
         gt = policy_ids[:T].astype(np.int64)
         acc = float((pred_per_frame == gt).mean())
 
@@ -405,14 +466,66 @@ class LSTMPolicyIDEvaluator:
         bd = self._boundary_breakdown(gt, pred_per_frame, motion_ids_raw, self.boundary_radius_frames)
 
         print(f"  - Policy ID Accuracy: {acc:.2%}")
+        print(f"  - Mean Confidence: {np.mean(confidence_per_frame):.4f}, Mean Entropy: {np.mean(entropy_per_frame):.4f}")
         if bd:
             print(f"  - Switch idx: {int(bd['switch_idx'])}, near(+/-{self.boundary_radius_frames}) acc={bd['near_acc']:.2%}, outside acc={bd['out_acc']:.2%}")
         print("  - Confusion (top10):")
         for (tg, tp, c) in confusion[:10]:
             print(f"    True={tg}, Pred={tp}: {c}")
 
-        return {"policy_acc": acc, "confusion": confusion, "gt_policy_ids_per_frame": gt,
-                "pred_policy_ids_per_frame": pred_per_frame, "boundary": bd}
+        if output_dir:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create separate folders for images and CSV
+            images_dir = output_dir / "images"
+            csv_dir = output_dir / "csv_data"
+            images_dir.mkdir(parents=True, exist_ok=True)
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save plot in images folder
+            plot_path = self._plot_policy_id_tracking(gt, pred_per_frame, npy_file.stem, images_dir, acc)
+            print(f"Saved plot: {plot_path}")
+            
+            # Save CSV with timestep, GT policy ID, predicted policy ID, probabilities, entropy, and confidence
+            csv_path = csv_dir / f"{npy_file.stem}_policy_ids.csv"
+            
+            # Load timesteps from the npy file
+            data = np.load(npy_file, allow_pickle=True)
+            times = data[:T, 0]  # Only take T frames
+            
+            num_policies = probs_per_frame.shape[1]
+            header = ["timestep", "policy_id", "gt_policy_id", "confidence", "entropy"]
+            # Add probability columns for each policy ID
+            header.extend([f"prob_policy_{i}" for i in range(num_policies)])
+            
+            with open(csv_path, "w", newline="") as fp:
+                w = csv.writer(fp)
+                w.writerow(header)
+                for idx, (t, gt_pid, pred_pid) in enumerate(zip(times, gt, pred_per_frame)):
+                    row = [
+                        f"{t:.6f}", 
+                        int(pred_pid), 
+                        int(gt_pid),
+                        f"{confidence_per_frame[idx]:.6f}",
+                        f"{entropy_per_frame[idx]:.6f}"
+                    ]
+                    # Add probabilities for each policy
+                    row.extend([f"{p:.6f}" for p in probs_per_frame[idx]])
+                    w.writerow(row)
+            print(f"Saved CSV: {csv_path}")
+
+        return {
+            "policy_acc": acc, 
+            "confusion": confusion, 
+            "gt_policy_ids_per_frame": gt,
+            "pred_policy_ids_per_frame": pred_per_frame, 
+            "boundary": bd,
+            "probs_per_frame": probs_per_frame,
+            "entropy_per_frame": entropy_per_frame,
+            "confidence_per_frame": confidence_per_frame,
+            "mean_entropy": float(np.mean(entropy_per_frame)),
+            "mean_confidence": float(np.mean(confidence_per_frame)),
+        }
 
     def evaluate_all_files(self, output_dir: Optional[str] = None) -> Dict[str, Dict[str, object]]:
         npy_files = sorted(self.npy_data_dir.glob("*.npy"))
@@ -435,8 +548,10 @@ class LSTMPolicyIDEvaluator:
             print(f"Mean acc: {np.mean(accs):.2%}, Std: {np.std(accs):.2%}, Min: {np.min(accs):.2%}, Max: {np.max(accs):.2%}")
 
             if out_path:
-                # Save summary CSV
-                csv_path = out_path / "policy_id_prediction_results.csv"
+                # Save summary CSV in csv_data folder
+                csv_dir = out_path / "csv_data"
+                csv_dir.mkdir(parents=True, exist_ok=True)
+                csv_path = csv_dir / "policy_id_prediction_results.csv"
                 with open(csv_path, "w", newline="") as fp:
                     w = csv.writer(fp)
                     w.writerow(["filename", "acc", "switch_idx", f"near_acc(+/-{self.boundary_radius_frames})", "out_acc"])
@@ -490,16 +605,15 @@ if __name__ == "__main__":
 python scripts/test_baseline_risk_predictor.py \
   --config configs/agent_codebook_switching.yaml \
   --checkpoint ./checkpoints/lstm_policy_predictor/best_model.ckpt \
-  --npy_data_dir /home/baekdh/dh_workspace/hrl/humanoidverse/data/motions/sequence_data/comparison_inertialization_training \
+  --npy_data_dir /home/baekdh/dh_workspace/hrl/humanoidverse/data/motions/sequence_data/comparison_inertialization_diff_motions \
   --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl \
-  --output_dir ./evaluation_lstm_policy_id_sequence_training
+  --output_dir ./evaluation_policy_id_sequence_testing_diff_motions
 
 # Evaluate single file
 python scripts/test_baseline_risk_predictor.py \
   --config configs/agent_codebook_switching.yaml \
   --checkpoint ./checkpoints/lstm_policy_predictor/best_model.ckpt \
-  --npy_data_dir /home/baekdh/dh_workspace/data_deploy/deploy_pkl/each_motion_npy \
-  --file saved_desired_states_8.npy \
+  --npy_data_dir /home/baekdh/dh_workspace/hrl/humanoidverse/data/motions/single_motion_select_w_unseen \
   --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl \
   --output_dir ./evaluation_lstm_policy_id
 

@@ -657,46 +657,18 @@ if __name__ == "__main__":
 python scripts/eval_policy_id_prediction_vqvae.py \
   --config configs/agent_codebook_switching.yaml \
   --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/checkpoints/run_0_1000_switching_policy_id/best_model.ckpt \
-  --npy_data_dir /home/baekdh/dh_workspace/hrl/humanoidverse/data/motions/sequence_data/comparison_inertialization_testing\
+  --npy_data_dir /home/baekdh/dh_workspace/hrl/humanoidverse/data/motions/sequence_data/comparison_inertialization_diff_motions\
   --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl \
-  --output_dir ./evaluation_policy_id_sequence_testing
+  --output_dir ./evaluation_policy_id_sequence_testing_diff_motions
 
 
 python scripts/eval_policy_id_prediction_vqvae.py \
   --config configs/agent_codebook_switching.yaml \
   --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/checkpoints/run_0_1000_switching_policy_id/best_model.ckpt \
-  --npy_data_dir /home/baekdh/dh_workspace/hrl/humanoidverse/data/motions/sequence_data/comparison_inertialization_training \
-  --file saved_desired_states_108_8_fg.npy \
+  --npy_data_dir /home/baekdh/dh_workspace/hrl/humanoidverse/data/motions/single_motion \
   --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl \
-  --output_dir ./evaluation_policy_id_amass
+  --output_dir ./evaluation_policy_id_all
 
 
-# Evaluate single file (with PKL for GT policy IDs)
-python scripts/eval_policy_id_prediction_vqvae.py \
-  --config configs/agent_codebook_switching.yaml \
-  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/checkpoints/run_0_1000_switching_policy_id/best_model.ckpt \
-  --npy_data_dir /home/baekdh/dh_workspace/data_deploy/deploy_pkl/each_motion_npy \
-  --file saved_desired_states_8.npy \
-  --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl \
-  --output_dir ./evaluation_policy_id
-
-# Evaluate all files with motion IDs 0-100 (with PKL for GT policy IDs)
-python scripts/eval_policy_id_prediction_vqvae.py \
-  --config configs/agent_codebook_switching.yaml \
-  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/checkpoints/run_0_1000_switching_policy_id/best_model.ckpt \
-  --npy_data_dir /home/baekdh/dh_workspace/data_deploy/deploy_pkl/each_motion_npy \
-  --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl \
-  --output_dir ./evaluation_policy_id \
-  --min_motion_id 0 \
-  --max_motion_id 10
-
-
-# Evaluate all files in each_motion_npy (with PKL for GT policy IDs)
-python scripts/eval_policy_id_prediction_vqvae.py \
-  --config configs/agent_codebook_switching.yaml \
-  --checkpoint /home/baekdh/dh_workspace/vqvae_motion_g1/checkpoints/run_0_1000_switching_policy_id/best_model.ckpt \
-  --npy_data_dir /home/baekdh/dh_workspace/data_deploy/deploy_pkl/each_motion_npy \
-  --input_pkl /home/baekdh/dh_workspace/data_phc/data/amass/amass_train_w_policy_id/amass_train_w_policy_id.pkl \
-  --output_dir ./evaluation_policy_id
 
   '''

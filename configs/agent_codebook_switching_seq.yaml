@@ -57,7 +57,7 @@ agent:
     # Policy prediction mode
     policy_use_sequence_wise: true  # If true: predict policy ID per timestep (sequence-wise). If false: predict one policy ID per window (chunk-wise)
     # Note: policy_use_soft_labels and policy_transition_weight are only used for chunk-wise mode (not applicable here)
-    policy_classifier_architecture: "cnn1d"  # Architecture for sequence-wise: "lstm", "transformer", or "cnn1d" (MLP not supported for sequence-wise)
+    policy_classifier_architecture: "lstm"  # Architecture for sequence-wise: "lstm", "transformer", or "cnn1d" (MLP not supported for sequence-wise)
     # CNN1D: Fast, captures local temporal patterns, parallelizable (recommended)
     # LSTM: Good temporal modeling, moderate speed
     # Transformer: Best for long-range dependencies, slower but parallelizable
